@@ -1,0 +1,10 @@
+[package]
+name = "b7l"
+version = "0.1.0"
+authors = ["Mikel Solabarrieta"]
+description = "A Rust re-implementation of Anubis."
+edition = "2024"
+homepage = "https://b7l.net"
+readme = "README.md"
+
+[dependencies]
