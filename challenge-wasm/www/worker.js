@@ -31,7 +31,11 @@ self.onmessage = async (e) => {
   // |   nonce   |  hash    |
   // ------------------------
   const nonceBytes = result.slice(0, 8);
-  const nonce = new DataView(nonceBytes.buffer).getBigUint64(0, false);
+  const nonce = new DataView(
+    nonceBytes.buffer,
+    nonceBytes.byteOffset,
+    nonceBytes.byteLength,
+  ).getBigUint64(0, false);
   const hash = result.slice(8);
 
   // Send solution back
