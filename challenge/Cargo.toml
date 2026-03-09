@@ -5,4 +5,4 @@ edition = "2024"
 
 [dependencies]
 itoa = "1.0.17"
-sha2 = "0.10.9"
+sha2 = { version = "0.10.9", default-features = false }

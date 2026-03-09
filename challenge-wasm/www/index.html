@@ -186,6 +186,17 @@
             container.innerHTML = `<div class="result ${success ? 'success' : 'error'}">${message}</div>`;
         }
 
+        function bytesToHex(bytes) {
+            return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function computeHashHex(randomData, nonce) {
+            const encoder = new TextEncoder();
+            const input = encoder.encode(`${randomData}${nonce}`);
+            const digest = await crypto.subtle.digest('SHA-256', input);
+            return bytesToHex(new Uint8Array(digest));
+        }
+
         function terminateAllWorkers() {
             workers.forEach(w => w.terminate());
             workers = [];
@@ -193,10 +204,6 @@
                 clearInterval(elapsedInterval);
                 elapsedInterval = null;
             }
-        }
-
-        function bytesToHex(bytes) {
-            return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
         window.startChallenge = async function() {
@@ -249,8 +256,8 @@
             for (let i = 0; i < numWorkers; i++) {
                 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
                 
-                worker.onmessage = (e) => {
-                    const { type, workerId, nonce, hash } = e.data;
+                worker.onmessage = async (e) => {
+                    const { type, workerId, nonce } = e.data;
                     
                     if (type === 'ready') {
                         document.getElementById(`worker-${workerId}`).classList.add('active');
@@ -264,7 +271,8 @@
                         setStatus(`Solved by <span class="inv">WORKER ${workerId}</span>`, true);
                         updateElapsed();
 
-                        const hashHex = bytesToHex(hash);
+                        const hashHex = await computeHashHex(randomData, nonce);
+
                         showResult(true, `
                             <strong>Solution found</strong><br><br>
                             <strong>Nonce:</strong> ${nonce}<br>

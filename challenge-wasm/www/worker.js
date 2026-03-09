@@ -22,27 +22,10 @@ self.onmessage = async (e) => {
     BigInt(step),
   );
 
-  // Parse result: first 8 bytes = nonce (big-endian), rest = hash.
-  // ________________________
-  // |         40 bytes     |
-  // ------------------------
-  // |  8 bytes  | 32 bytes |
-  // ------------------------
-  // |   nonce   |  hash    |
-  // ------------------------
-  const nonceBytes = result.slice(0, 8);
-  const nonce = new DataView(
-    nonceBytes.buffer,
-    nonceBytes.byteOffset,
-    nonceBytes.byteLength,
-  ).getBigUint64(0, false);
-  const hash = result.slice(8);
-
   // Send solution back
   self.postMessage({
     type: "found",
     workerId,
-    nonce: nonce.toString(),
-    hash: Array.from(hash),
+    nonce: result.toString(),
   });
 };
