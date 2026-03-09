@@ -154,9 +154,15 @@
     </div>
 
     <script type="module">
-        // Set default worker count to half of available cores
-        const defaultWorkers = Math.max(1, Math.floor(navigator.hardwareConcurrency / 2) || 2);
-        document.getElementById('numWorkers').value = defaultWorkers;
+        // Derive worker limits from available cores, fallback to 32 if unavailable.
+        const detectedCores = Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency > 0
+            ? navigator.hardwareConcurrency
+            : 32;
+        const maxWorkers = detectedCores;
+        const defaultWorkers = Math.max(1, Math.floor(maxWorkers / 2));
+        const numWorkersInput = document.getElementById('numWorkers');
+        numWorkersInput.max = String(maxWorkers);
+        numWorkersInput.value = defaultWorkers;
 
         let workers = [];
         let startTime = null;
@@ -200,9 +206,20 @@
             const randomData = document.getElementById('randomData').value.trim();
             const difficulty = parseInt(document.getElementById('difficulty').value, 10);
             const numWorkers = parseInt(document.getElementById('numWorkers').value, 10);
+            const randomDataIsHex = /^[0-9a-fA-F]+$/.test(randomData);
 
-            if (!randomData || randomData.length < 10) {
-                showResult(false, 'Please enter valid random data');
+            if (!randomData || !randomDataIsHex || randomData.length % 2 !== 0) {
+                showResult(false, 'Random data must be a non-empty, even-length hex string');
+                return;
+            }
+
+            if (!Number.isInteger(difficulty) || difficulty < 1 || difficulty > 10) {
+                showResult(false, 'Difficulty must be an integer between 1 and 10');
+                return;
+            }
+
+            if (!Number.isInteger(numWorkers) || numWorkers < 1 || numWorkers > maxWorkers) {
+                showResult(false, `Number of workers must be an integer between 1 and ${maxWorkers}`);
                 return;
             }
 
