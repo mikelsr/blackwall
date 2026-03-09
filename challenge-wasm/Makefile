@@ -8,6 +8,11 @@ WASM_FILE := $(OUT_DIR)/challenge_wasm_bg.wasm
 
 .PHONY: build compact stats twiggy
 
+install:
+	rustup target add wasm32-unknown-unknown
+	cargo install wasm-opt --locked
+	cargo install twiggy
+
 build:
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
 	CARGO_PROFILE_RELEASE_OPT_LEVEL=3 \
