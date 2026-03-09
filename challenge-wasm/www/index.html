@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anubis Challenge - WASM PoW</title>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Futura, Bahnschrift, 'Avenir Next Condensed', 'Arial Narrow', sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0a0a0a;
+            color: #cc1a1a;
+        }
+        h1 {
+            color: #ff1a1a;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-size: 1.4em;
+            border-bottom: 1px solid #331111;
+            padding-bottom: 10px;
+            text-shadow: 0 0 8px rgba(255,26,26,0.4);
+        }
+        .config {
+            background: #0f0f0f;
+            padding: 20px;
+            border: 1px solid #331111;
+            margin-bottom: 20px;
+        }
+        .config label {
+            display: block;
+            margin-bottom: 10px;
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #882222;
+        }
+        .config input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 4px;
+            border: 1px solid #331111;
+            background: #0a0a0a;
+            color: #cc1a1a;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+        }
+        .config input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+        .config input[type="number"]::-webkit-inner-spin-button,
+        .config input[type="number"]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+        .config input:focus {
+            outline: none;
+            border-color: #ff1a1a;
+            box-shadow: 0 0 4px rgba(255,26,26,0.3);
+        }
+        button {
+            background: transparent;
+            color: #ff1a1a;
+            border: 1px solid #ff1a1a;
+            padding: 10px 24px;
+            cursor: pointer;
+            font-family: Futura, Bahnschrift, 'Avenir Next Condensed', 'Arial Narrow', sans-serif;
+            font-weight: bold;
+            font-size: 14px;
+            text-transform: uppercase;
+            letter-spacing: 2px;
+            transition: all 0.15s;
+        }
+        button:hover {
+            background: #ff1a1a;
+            color: #0a0a0a;
+            box-shadow: 0 0 12px rgba(255,26,26,0.4);
+        }
+        button:disabled {
+            border-color: #332222;
+            color: #332222;
+            cursor: not-allowed;
+            background: transparent;
+            box-shadow: none;
+        }
+        .status {
+            background: #0f0f0f;
+            padding: 20px;
+            border: 1px solid #331111;
+            margin-top: 20px;
+            font-size: 13px;
+        }
+        .workers {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            justify-content: center;
+        }
+        .worker {
+            background: #1a0a0a;
+            border: 1px solid #331111;
+            padding: 6px 10px;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .worker.active {
+            border-color: #ff1a1a;
+            color: #ff1a1a;
+            box-shadow: 0 0 6px rgba(255,26,26,0.3);
+        }
+        .worker.found {
+            background: #ff1a1a;
+            color: #0a0a0a;
+            border-color: #ff1a1a;
+        }
+        .result {
+            background: #1a0a0a;
+            padding: 15px;
+            margin-top: 15px;
+            word-break: break-all;
+            font-size: 12px;
+            border-left: 2px solid #331111;
+        }
+        .result.success { border-left-color: #ff1a1a; }
+        .result.error { border-left-color: #662222; }
+        #elapsed { color: #ff1a1a; }
+        strong { color: #dd2222; text-transform: uppercase; }
+        .inv { background: #ff1a1a; color: #0a0a0a; padding: 6px 10px; font-size: 11px; }
+    </style>
+</head>
+<body>
+    <h1>// Anubis Challenge — WASM PoW</h1>
+    
+    <div class="config">
+        <label>
+            Random Data (hex string from server):
+            <input type="text" id="randomData" value="deadbeefcafe1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef12">
+        </label>
+        <label>
+            Difficulty (leading zero hex digits):
+            <input type="number" id="difficulty" value="4" min="1" max="10">
+        </label>
+        <label>
+            Number of Workers:
+            <input type="number" id="numWorkers" value="" min="1" max="32">
+        </label>
+        <button id="startBtn" onclick="startChallenge()">Start Challenge</button>
+    </div>
+
+    <div class="status">
+        <div><strong>STATUS:</strong> <span id="statusText">Ready</span></div>
+        <div><strong>ELAPSED:</strong> <span id="elapsed">-</span></div>
+        <div><strong>WORKERS:</strong></div>
+        <div class="workers" id="workersContainer"></div>
+        <div id="resultContainer"></div>
+    </div>
+
+    <script type="module">
+        // Set default worker count to half of available cores
+        const defaultWorkers = Math.max(1, Math.floor(navigator.hardwareConcurrency / 2) || 2);
+        document.getElementById('numWorkers').value = defaultWorkers;
+
+        let workers = [];
+        let startTime = null;
+        let elapsedInterval = null;
+
+        function updateElapsed() {
+            if (startTime) {
+                const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+                document.getElementById('elapsed').textContent = `${elapsed}s`;
+            }
+        }
+
+        function setStatus(text, html = false) {
+            const el = document.getElementById('statusText');
+            if (html) el.innerHTML = text;
+            else el.textContent = text;
+        }
+
+        function showResult(success, message) {
+            const container = document.getElementById('resultContainer');
+            container.innerHTML = `<div class="result ${success ? 'success' : 'error'}">${message}</div>`;
+        }
+
+        function terminateAllWorkers() {
+            workers.forEach(w => w.terminate());
+            workers = [];
+            if (elapsedInterval) {
+                clearInterval(elapsedInterval);
+                elapsedInterval = null;
+            }
+        }
+
+        function bytesToHex(bytes) {
+            return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        window.startChallenge = async function() {
+            // Clean up any previous run
+            terminateAllWorkers();
+
+            const randomData = document.getElementById('randomData').value.trim();
+            const difficulty = parseInt(document.getElementById('difficulty').value, 10);
+            const numWorkers = parseInt(document.getElementById('numWorkers').value, 10);
+
+            if (!randomData || randomData.length < 10) {
+                showResult(false, 'Please enter valid random data');
+                return;
+            }
+
+            // Update UI
+            document.getElementById('startBtn').disabled = true;
+            setStatus('Initializing workers...');
+            document.getElementById('resultContainer').innerHTML = '';
+            
+            const workersContainer = document.getElementById('workersContainer');
+            workersContainer.innerHTML = '';
+            
+            // Create worker status indicators
+            for (let i = 0; i < numWorkers; i++) {
+                const div = document.createElement('div');
+                div.className = 'worker';
+                div.id = `worker-${i}`;
+                div.textContent = `Worker ${i}`;
+                workersContainer.appendChild(div);
+            }
+
+            startTime = performance.now();
+            elapsedInterval = setInterval(updateElapsed, 100);
+
+            setStatus('Solving...');
+
+            // Spawn workers
+            for (let i = 0; i < numWorkers; i++) {
+                const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+                
+                worker.onmessage = (e) => {
+                    const { type, workerId, nonce, hash } = e.data;
+                    
+                    if (type === 'ready') {
+                        document.getElementById(`worker-${workerId}`).classList.add('active');
+                    } else if (type === 'found') {
+                        // Solution found!
+                        const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
+                        
+                        document.getElementById(`worker-${workerId}`).classList.remove('active');
+                        document.getElementById(`worker-${workerId}`).classList.add('found');
+                        
+                        setStatus(`Solved by <span class="inv">WORKER ${workerId}</span>`, true);
+                        updateElapsed();
+
+                        const hashHex = bytesToHex(hash);
+                        showResult(true, `
+                            <strong>Solution found</strong><br><br>
+                            <strong>Nonce:</strong> ${nonce}<br>
+                            <strong>Hash:</strong> ${hashHex}<br>
+                            <strong>Time:</strong> ${elapsed}s<br>
+                            <strong>Worker:</strong> ${workerId}
+                        `);
+                        
+                        terminateAllWorkers();
+                        document.getElementById('startBtn').disabled = false;
+                    }
+                };
+
+                worker.onerror = (err) => {
+                    console.error(`Worker ${i} error:`, err);
+                    setStatus(`Worker ${i} error: ${err.message}`);
+                    terminateAllWorkers();
+                    document.getElementById('startBtn').disabled = false;
+                };
+
+                // Start the worker
+                worker.postMessage({
+                    workerId: i,
+                    randomData,
+                    difficulty,
+                    startNonce: i,
+                    step: numWorkers
+                });
+
+                workers.push(worker);
+            }
+        };
+    </script>
+</body>
+</html>
