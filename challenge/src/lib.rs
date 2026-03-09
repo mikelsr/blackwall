@@ -31,6 +31,17 @@ pub fn check_difficulty(hash: &[u8; 32], difficulty: u32) -> bool {
     true
 }
 
+/// Solve the hash: find a hash for the data that has $difficulty leading zeros.
+pub fn solve(random_data: &str, difficulty: u32, start_nonce: u64, step: u64) -> (u64, [u8; 32]) {
+    let mut nonce = start_nonce;
+    let mut hash: [u8; 32] = compute_hash(random_data, nonce);
+    while !check_difficulty(&hash, difficulty) {
+        nonce += step;
+        hash = compute_hash(random_data, nonce);
+    }
+    return (nonce, hash);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
