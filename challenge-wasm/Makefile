@@ -4,14 +4,20 @@ WASM_OPT ?= wasm-opt
 TARGET ?= web
 OUT_DIR ?= pkg
 CARGO_TARGET_DIR ?= target
+MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 WASM_FILE := $(OUT_DIR)/challenge_wasm_bg.wasm
 
-.PHONY: build compact stats twiggy
+.PHONY: install test build compact stats twiggy
 
 install:
 	rustup target add wasm32-unknown-unknown
 	cargo install wasm-opt --locked
 	cargo install twiggy
+
+test:
+	@ # There are no manual tests, but there is a neat little web page.
+	@ echo "Access the web page at http://localhost:9999/www/index.html"
+	@ python3 -m http.server 9999 --directory $(MAKEFILE_DIR)
 
 build:
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
