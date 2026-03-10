@@ -128,7 +128,7 @@
 </head>
 <body>
     <h1>// Anubis Challenge — WASM PoW</h1>
-    
+
     <div class="config">
         <label>
             Random Data (hex string from server):
@@ -190,9 +190,20 @@
             return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        async function computeHashHex(randomData, nonce) {
+        function decodeHex(hex) {
+            const bytes = new Uint8Array(hex.length / 2);
+            for (let i = 0; i < hex.length; i += 2) {
+                bytes[i / 2] = parseInt(hex.slice(i, i + 2), 16);
+            }
+            return bytes;
+        }
+
+        async function computeHashHex(randomDataBytes, nonce) {
             const encoder = new TextEncoder();
-            const input = encoder.encode(`${randomData}${nonce}`);
+            const nonceBytes = encoder.encode(String(nonce));
+            const input = new Uint8Array(randomDataBytes.length + nonceBytes.length);
+            input.set(randomDataBytes);
+            input.set(nonceBytes, randomDataBytes.length);
             const digest = await crypto.subtle.digest('SHA-256', input);
             return bytesToHex(new Uint8Array(digest));
         }
@@ -230,14 +241,16 @@
                 return;
             }
 
+            const randomDataBytes = decodeHex(randomData);
+
             // Update UI
             document.getElementById('startBtn').disabled = true;
             setStatus('Initializing workers...');
             document.getElementById('resultContainer').innerHTML = '';
-            
+
             const workersContainer = document.getElementById('workersContainer');
             workersContainer.innerHTML = '';
-            
+
             // Create worker status indicators
             for (let i = 0; i < numWorkers; i++) {
                 const div = document.createElement('div');
@@ -255,23 +268,23 @@
             // Spawn workers
             for (let i = 0; i < numWorkers; i++) {
                 const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
-                
+
                 worker.onmessage = async (e) => {
                     const { type, workerId, nonce } = e.data;
-                    
+
                     if (type === 'ready') {
                         document.getElementById(`worker-${workerId}`).classList.add('active');
                     } else if (type === 'found') {
                         // Solution found!
                         const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
-                        
+
                         document.getElementById(`worker-${workerId}`).classList.remove('active');
                         document.getElementById(`worker-${workerId}`).classList.add('found');
-                        
+
                         setStatus(`Solved by <span class="inv">WORKER ${workerId}</span>`, true);
                         updateElapsed();
 
-                        const hashHex = await computeHashHex(randomData, nonce);
+                        const hashHex = await computeHashHex(randomDataBytes, nonce);
 
                         showResult(true, `
                             <strong>Solution found</strong><br><br>
@@ -280,7 +293,7 @@
                             <strong>Time:</strong> ${elapsed}s<br>
                             <strong>Worker:</strong> ${workerId}
                         `);
-                        
+
                         terminateAllWorkers();
                         document.getElementById('startBtn').disabled = false;
                     }
@@ -296,7 +309,7 @@
                 // Start the worker
                 worker.postMessage({
                     workerId: i,
-                    randomData,
+                    randomData: randomDataBytes,
                     difficulty,
                     startNonce: i,
                     step: numWorkers

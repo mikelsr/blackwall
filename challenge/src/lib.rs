@@ -2,9 +2,9 @@ use itoa;
 use sha2::{Digest, Sha256};
 
 /// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
-pub fn compute_hash(random_data: &str, nonce: u64) -> [u8; 32] {
+pub fn compute_hash(random_data: &[u8], nonce: u64) -> [u8; 32] {
     let mut hasher = <Sha256 as Digest>::new();
-    hasher.update(random_data.as_bytes());
+    hasher.update(random_data);
 
     let mut buffer = itoa::Buffer::new();
     let nonce_str = buffer.format(nonce);
@@ -15,10 +15,13 @@ pub fn compute_hash(random_data: &str, nonce: u64) -> [u8; 32] {
 
 /// Checks if a hash has the required number of leading zero hex digits (nibbles).
 pub fn check_difficulty(hash: &[u8; 32], difficulty: u32) -> bool {
+    if difficulty > 64 {
+        return false;
+    }
+
     let full_bytes = (difficulty / 2) as usize;
     let check_nibble = difficulty % 2 == 1;
 
-    // Check full zero bytes.
     if !hash[..full_bytes].iter().all(|&b| b == 0) {
         return false;
     }
@@ -31,15 +34,19 @@ pub fn check_difficulty(hash: &[u8; 32], difficulty: u32) -> bool {
     true
 }
 
-/// Solve the hash: find a hash for the data that has $difficulty leading zeros.
-pub fn solve(random_data: &str, difficulty: u32, start_nonce: u64, step: u64) -> (u64, [u8; 32]) {
+/// Solve the hash: find a hash for the data that has `difficulty` leading zeros.
+pub fn solve(random_data: &[u8], difficulty: u32, start_nonce: u64, step: u64) -> (u64, [u8; 32]) {
+    assert!(step > 0, "step must be > 0");
+
     let mut nonce = start_nonce;
-    let mut hash: [u8; 32] = compute_hash(random_data, nonce);
+    let mut hash = compute_hash(random_data, nonce);
     while !check_difficulty(&hash, difficulty) {
-        nonce += step;
+        nonce = nonce
+            .checked_add(step)
+            .expect("nonce overflow while searching for solution");
         hash = compute_hash(random_data, nonce);
     }
-    return (nonce, hash);
+    (nonce, hash)
 }
 
 #[cfg(test)]
