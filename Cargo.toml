@@ -4,6 +4,7 @@ members = [
     "challenge",
     "challenge-wasm",
     "cli",
+    "shared",
     "server",
 ]
 
