@@ -161,6 +161,7 @@ pub(crate) enum Target {
     Disabled,
     Http(Url),
     Https(Url),
+    // Unix(Url),
 }
 
 impl Target {
