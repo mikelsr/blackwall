@@ -8,3 +8,6 @@ build:
 
 prebaked-build:
 	B7L_VERSION="$(VERSION)" $(CARGO) build -p cli --bin blackwall --release
+
+www: # TODO: replace with proper web servers: http and unix sockets. Check Anubis for reference.
+	@ python3 -m http.server --directory test/shared/www
