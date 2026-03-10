@@ -43,7 +43,7 @@ pub(crate) struct ListenerConfig {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ProxyConfig {
-    pub target: UpstreamTarget,
+    pub target: Target,
     pub target_host: Option<String>,
     pub insecure_skip_verify: bool,
     pub disable_keepalive: bool,
@@ -67,7 +67,7 @@ impl TryFrom<RawArgs> for Config {
                 network: BindNetwork::parse(args.bind_network)?,
             },
             proxy: ProxyConfig {
-                target: UpstreamTarget::parse(args.target.as_str())?,
+                target: Target::parse(args.target.as_str())?,
                 target_host: target_host,
                 insecure_skip_verify: args.target_insecure_skip_verify,
                 disable_keepalive: args.target_disable_keepalive,
@@ -157,24 +157,24 @@ impl BindNetwork {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) enum UpstreamTarget {
+pub(crate) enum Target {
     Disabled,
     Http(Url),
     Https(Url),
 }
 
-impl UpstreamTarget {
+impl Target {
     fn parse(value: &str) -> Result<Self, ConfigError> {
         if value.trim().is_empty() {
-            return Ok(UpstreamTarget::Disabled);
+            return Ok(Target::Disabled);
         }
         let url = Url::parse(value).map_err(|source| ConfigError::InvalidTarget {
             value: value.to_owned(),
             source,
         })?;
         match url.scheme() {
-            "http" => Ok(UpstreamTarget::Http(url)),
-            "https" => Ok(UpstreamTarget::Https(url)),
+            "http" => Ok(Target::Http(url)),
+            "https" => Ok(Target::Https(url)),
             "unix" => Err(ConfigError::UnixTargetNotYetImplemented),
             _ => Err(ConfigError::UnsupportedTargetScheme(
                 url.scheme().to_owned(),
