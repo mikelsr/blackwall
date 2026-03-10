@@ -14,7 +14,7 @@ install:
 	cargo install wasm-opt --locked
 	cargo install twiggy
 
-test:
+test: build
 	@ # There are no manual tests, but there is a neat little web page.
 	@ echo "Access the web page at http://localhost:9999/www/index.html"
 	@ python3 -m http.server 9999 --directory $(MAKEFILE_DIR)
@@ -28,6 +28,10 @@ build:
 	CARGO_PROFILE_RELEASE_STRIP=symbols \
 	$(WASM_PACK) build --target $(TARGET) --release --no-opt --out-dir $(OUT_DIR)
 
+
+# Builds a compacted version of the WASM file.
+# It isn't too noticeable, but it doesn't degrade server performance
+# and it reduces bandwidth usage.
 compact: build
 	@if ! command -v $(WASM_OPT) >/dev/null 2>&1; then \
 		echo "wasm-opt not found on PATH"; \
