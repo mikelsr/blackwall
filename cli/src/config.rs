@@ -34,8 +34,12 @@ impl TryFrom<RawArgs> for Config {
     type Error = ConfigError;
 
     fn try_from(args: RawArgs) -> Result<Self, Self::Error> {
-        let target_host = normalize_target_host(args.target_host);
-        let path_rewrite = build_path_rewrite(args.base_prefix, args.strip_base_prefix)?;
+        let target_host = if args.target_host.is_empty() {
+            None
+        } else {
+            Some(args.target_host)
+        };
+        let path_rewrite = PathRewriteConfig::parse(args.base_prefix, args.strip_base_prefix)?;
 
         Ok(Self {
             listener: ListenerConfig {
@@ -50,30 +54,6 @@ impl TryFrom<RawArgs> for Config {
                 path_rewrite: path_rewrite,
             },
         })
-    }
-}
-
-fn normalize_target_host(value: String) -> Option<String> {
-    if value.is_empty() { None } else { Some(value) }
-}
-
-fn build_path_rewrite(
-    base_prefix: String,
-    strip_base_prefix: bool,
-) -> Result<Option<PathRewriteConfig>, ConfigError> {
-    let base_prefix = BasePrefix::parse(base_prefix)?;
-
-    if strip_base_prefix && base_prefix.is_none() {
-        return Err(ConfigError::StripBasePrefixRequiresBasePrefix);
-    }
-
-    if base_prefix.is_some() || strip_base_prefix {
-        Ok(Some(PathRewriteConfig {
-            base_prefix,
-            strip_base_prefix,
-        }))
-    } else {
-        Ok(None)
     }
 }
 
@@ -178,6 +158,25 @@ impl UpstreamTarget {
 pub(crate) struct PathRewriteConfig {
     pub base_prefix: Option<BasePrefix>,
     pub strip_base_prefix: bool,
+}
+
+impl PathRewriteConfig {
+    fn parse(base_prefix: String, strip_base_prefix: bool) -> Result<Option<Self>, ConfigError> {
+        let base_prefix = BasePrefix::parse(base_prefix)?;
+
+        if strip_base_prefix && base_prefix.is_none() {
+            return Err(ConfigError::StripBasePrefixRequiresBasePrefix);
+        }
+
+        if base_prefix.is_some() || strip_base_prefix {
+            Ok(Some(Self {
+                base_prefix,
+                strip_base_prefix,
+            }))
+        } else {
+            Ok(None)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
