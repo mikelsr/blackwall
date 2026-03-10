@@ -3,10 +3,30 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use url::Url;
 
-pub(crate) fn load_config() -> Result<Config, ConfigError> {
+pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let _ = dotenvy::dotenv();
     let args = RawArgs::parse();
-    Config::try_from(args)
+    StartupMode::parse(args)
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum StartupMode {
+    Serve(Config),
+    Version,
+    Healthcheck,
+}
+
+impl StartupMode {
+    fn parse(args: RawArgs) -> Result<StartupMode, ConfigError> {
+        if args.version {
+            return Ok(StartupMode::Version);
+        }
+        if args.health {
+            return Ok(StartupMode::Healthcheck);
+        }
+
+        Ok(StartupMode::Serve(Config::try_from(args)?))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -109,6 +129,15 @@ struct RawArgs {
         default_value_t = false
     )]
     pub(super) target_insecure_skip_verify: bool,
+
+    // Startup modes
+    /// Run a health check against Blackwall
+    #[arg(long = "healthcheck", env = "HEALTHCHECK", default_value_t = false)]
+    pub(super) health: bool,
+
+    /// Print Blackwall version
+    #[arg(long = "version", env = "VERSION", default_value_t = false)]
+    pub(super) version: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

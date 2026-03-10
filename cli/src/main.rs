@@ -4,15 +4,23 @@ use axum::serve;
 use server::build_router;
 
 #[tokio::main]
-async fn main() {
-    let cfg = config::load_config().unwrap();
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let cfg = match config::load_config()? {
+        config::StartupMode::Version => {
+            println!("Blackwall v{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        config::StartupMode::Healthcheck => {
+            println!("healthcheck not implemented yet");
+            return Ok(());
+        }
+        config::StartupMode::Serve(cfg) => cfg,
+    };
 
-    // build our application with a single route
     let app = build_router();
 
-    // run our app with hyper, listening globally on port 3000
-    let listener = tokio::net::TcpListener::bind(cfg.listener.bind)
-        .await
-        .unwrap();
-    serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&cfg.listener.bind).await?;
+    serve(listener, app).await?;
+
+    Ok(())
 }
