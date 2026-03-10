@@ -14,7 +14,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("healthcheck not implemented yet");
             return Ok(());
         }
-        config::StartupMode::Serve(cfg) => cfg,
+        config::StartupMode::Run(cfg) => cfg,
     };
 
     let app = build_router();
