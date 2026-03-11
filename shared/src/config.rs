@@ -99,6 +99,12 @@ impl PathRewriteConfig {
 pub struct BasePrefix(String);
 
 impl BasePrefix {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl BasePrefix {
     pub fn parse(value: String) -> Result<Option<Self>, ConfigError> {
         if value.is_empty() {
             return Ok(None);
