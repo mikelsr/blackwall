@@ -8,7 +8,7 @@ name = "blackwall"
 path = "src/main.rs"
 
 [dependencies]
-server = { path = "../server" }
+proxy = { path = "../proxy" }
 shared = { path = "../shared" }
 
 axum = "0.8.8"
