@@ -133,4 +133,44 @@ pub fn build_router(mode: RuntimeMode, /*, forward_config: ForwardedHeadersConfi
         RuntimeMode::AuthOnly => Router::new().fallback(handler_auth_only),
     }
 }
+// Anubis allows invalid configurations and fails with 502 while proxying.
+// I've opted for failing fast and not allowing those states, at least for now.
+#[derive(Debug)]
+pub enum ProxyInitError {
+    InvalidTargetAuthority {
+        value: String,
+    },
+    InvalidTargetUrl {
+        value: String,
+        reason: &'static str,
+    },
+    InvalidTargetHost {
+        value: String,
+        source: axum::http::header::InvalidHeaderValue,
+    },
+}
+
+impl Display for ProxyInitError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            ProxyInitError::InvalidTargetAuthority { value } => {
+                write!(f, "invalid target authority {:?}", value)
+            }
+            ProxyInitError::InvalidTargetUrl { value, reason } => {
+                write!(f, "invalid target URL {:?}: {}", value, reason)
+            }
+            ProxyInitError::InvalidTargetHost { value, .. } => {
+                write!(f, "invalid target-host {:?}", value)
+            }
+        }
+    }
+}
+
+impl Error for ProxyInitError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            ProxyInitError::InvalidTargetHost { source, .. } => Some(source),
+            _ => None,
+        }
+    }
 }
