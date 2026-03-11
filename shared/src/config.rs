@@ -18,8 +18,11 @@ pub struct ListenerConfig {
 pub struct ProxyConfig {
     pub target: Target,
     pub target_host: Option<String>,
+    pub target_sni: Option<String>,
     pub insecure_skip_verify: bool,
     pub disable_keepalive: bool,
+    pub use_remote_address: bool,
+    pub xff_strip_private: bool,
     pub path_rewrite: Option<PathRewriteConfig>,
 }
 
