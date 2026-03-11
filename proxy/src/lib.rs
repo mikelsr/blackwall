@@ -18,7 +18,7 @@ use rustls;
 use shared::config::{BasePrefix, PathRewriteConfig, ProxyConfig, Target};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use url::Url;
 
 pub struct ProxyState {
@@ -229,7 +229,7 @@ fn build_client(insecure_skip_verify: bool, disable_keepalive: bool) -> HttpsCli
     let https = if insecure_skip_verify {
         let crypto = rustls::ClientConfig::builder()
             .dangerous()
-            .with_custom_certificate_verifier(Arc::new(tls::NilVerifier))
+            .with_custom_certificate_verifier(Arc::new(tls::SignatureVerifier))
             .with_no_client_auth();
         HttpsConnectorBuilder::new()
             .with_tls_config(crypto)

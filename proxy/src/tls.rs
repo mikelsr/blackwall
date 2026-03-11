@@ -1,18 +1,11 @@
 use rustls;
 use rustls::{DigitallySignedStruct, Error, SignatureScheme, client::danger, crypto, pki_types};
-use std::sync::LazyLock;
 
-/// Accepts any server certificate. There has to be a cleaner way to do this.
+/// Verifies handshake signatures, but not certificates or hostnames
 #[derive(Debug)]
-pub(crate) struct NilVerifier;
+pub(crate) struct SignatureVerifier;
 
-static SUPPORTED_SCHEMES: LazyLock<Vec<SignatureScheme>> = LazyLock::new(|| {
-    crypto::ring::default_provider()
-        .signature_verification_algorithms
-        .supported_schemes()
-});
-
-impl danger::ServerCertVerifier for NilVerifier {
+impl danger::ServerCertVerifier for SignatureVerifier {
     fn verify_server_cert(
         &self,
         _: &pki_types::CertificateDer<'_>,
@@ -26,23 +19,37 @@ impl danger::ServerCertVerifier for NilVerifier {
 
     fn verify_tls12_signature(
         &self,
-        _: &[u8],
-        _: &pki_types::CertificateDer<'_>,
-        _: &DigitallySignedStruct,
+        message: &[u8],
+        certificate: &pki_types::CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<danger::HandshakeSignatureValid, Error> {
-        Ok(danger::HandshakeSignatureValid::assertion())
+        let provider = crypto::ring::default_provider();
+        crypto::verify_tls12_signature(
+            message,
+            certificate,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn verify_tls13_signature(
         &self,
-        _: &[u8],
-        _: &pki_types::CertificateDer<'_>,
-        _: &DigitallySignedStruct,
+        message: &[u8],
+        certificate: &pki_types::CertificateDer<'_>,
+        dss: &DigitallySignedStruct,
     ) -> Result<danger::HandshakeSignatureValid, Error> {
-        Ok(danger::HandshakeSignatureValid::assertion())
+        let provider = crypto::ring::default_provider();
+        crypto::verify_tls13_signature(
+            message,
+            certificate,
+            dss,
+            &provider.signature_verification_algorithms,
+        )
     }
 
     fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        SUPPORTED_SCHEMES.clone()
+        crypto::ring::default_provider()
+            .signature_verification_algorithms
+            .supported_schemes()
     }
 }
