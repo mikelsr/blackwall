@@ -4,4 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+shared = { path = "../shared" }
 axum = "0.8.8"
+hyper-util = { version = "0.1.20", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
+hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "tls12", "ring", "logging", "webpki-roots"] }
+url = "2.5.8"
+hyper = "1.8.1"
+rustls = "0.23.37"
+tower = "0.5.3"
+smallvec = "1.15.1"
