@@ -5,7 +5,7 @@ members = [
     "challenge-wasm",
     "cli",
     "shared",
-    "server",
+    "proxy",
 ]
 
 [workspace.package]

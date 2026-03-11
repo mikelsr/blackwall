@@ -1,7 +1,7 @@
 mod config;
 
 use axum::serve;
-use server::build_router;
+use proxy::{RuntimeMode, build_router};
 use std::net::SocketAddr;
 use tokio::{select, signal};
 
