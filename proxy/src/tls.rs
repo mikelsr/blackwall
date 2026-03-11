@@ -1,47 +1,48 @@
 use rustls;
+use rustls::{DigitallySignedStruct, Error, SignatureScheme, client::danger, crypto, pki_types};
 use std::sync::LazyLock;
 
 /// Accepts any server certificate. There has to be a cleaner way to do this.
 #[derive(Debug)]
 pub(crate) struct NilVerifier;
 
-static SUPPORTED_SCHEMES: LazyLock<Vec<rustls::SignatureScheme>> = LazyLock::new(|| {
-    rustls::crypto::ring::default_provider()
+static SUPPORTED_SCHEMES: LazyLock<Vec<SignatureScheme>> = LazyLock::new(|| {
+    crypto::ring::default_provider()
         .signature_verification_algorithms
         .supported_schemes()
 });
 
-impl rustls::client::danger::ServerCertVerifier for NilVerifier {
+impl danger::ServerCertVerifier for NilVerifier {
     fn verify_server_cert(
         &self,
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &[rustls::pki_types::CertificateDer<'_>],
-        _: &rustls::pki_types::ServerName<'_>,
+        _: &pki_types::CertificateDer<'_>,
+        _: &[pki_types::CertificateDer<'_>],
+        _: &pki_types::ServerName<'_>,
         _: &[u8],
-        _: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        Ok(rustls::client::danger::ServerCertVerified::assertion())
+        _: pki_types::UnixTime,
+    ) -> Result<danger::ServerCertVerified, Error> {
+        Ok(danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
         _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        _: &pki_types::CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<danger::HandshakeSignatureValid, Error> {
+        Ok(danger::HandshakeSignatureValid::assertion())
     }
 
     fn verify_tls13_signature(
         &self,
         _: &[u8],
-        _: &rustls::pki_types::CertificateDer<'_>,
-        _: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
+        _: &pki_types::CertificateDer<'_>,
+        _: &DigitallySignedStruct,
+    ) -> Result<danger::HandshakeSignatureValid, Error> {
+        Ok(danger::HandshakeSignatureValid::assertion())
     }
 
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
         SUPPORTED_SCHEMES.clone()
     }
 }
