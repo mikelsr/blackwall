@@ -1,9 +1,10 @@
 use axum::http::{HeaderMap, header};
 use smallvec::SmallVec;
 
-const X_FORWARDED_FOR: &str = "x-forwarded-for";
-const X_REAL_IP: &str = "x-real-ip";
-const KEEP_ALIVE: &str = "keep-alive";
+pub(crate) const X_FORWARDED_FOR: &str = "x-forwarded-for";
+pub(crate) const X_REAL_IP: &str = "x-real-ip";
+pub(crate) const KEEP_ALIVE: &str = "keep-alive";
+pub(crate) const UPGRADE: &str = "upgrade";
 
 const REMOVABLE_CONN_HEADERS: &[header::HeaderName] = &[
     header::CONNECTION,

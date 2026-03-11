@@ -1,5 +1,6 @@
 mod headers;
 mod tls;
+mod upgrade;
 
 use axum::{
     Router,
@@ -159,7 +160,12 @@ async fn handler_proxy(
         req.headers_mut().insert(HOST, header_value.clone());
     }
 
-    todo!("optional upgrade");
+    let upgrade_requested = upgrade::requests_upgrade(&req);
+    let client_upgrade = if upgrade_requested {
+        Some(hyper::upgrade::on(&mut req))
+    } else {
+        None
+    };
 
     let mut response = state
         .client
@@ -169,7 +175,10 @@ async fn handler_proxy(
 
     headers::strip_hop_by_hop(response.headers_mut());
 
-    todo!("client upgrade");
+    if let Some(client_upgrade) = client_upgrade {
+        let target_upgrade = hyper::upgrade::on(&mut response);
+        tokio::spawn(async move { upgrade::upgrade_relay(client_upgrade, target_upgrade) });
+    }
 
     Ok(response.map(Body::new))
 }
