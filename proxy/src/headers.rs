@@ -39,7 +39,7 @@ fn extract_conn_headers(headers: &HeaderMap) -> SmallVec<[header::HeaderName; 4]
                     let name = value.trim().parse::<header::HeaderName>().ok()?;
                     // UPGRADE is required later down the line
                     if name == header::UPGRADE {
-                        return Some(name);
+                        return None;
                     }
                     Some(name)
                 })
