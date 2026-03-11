@@ -133,6 +133,115 @@ pub fn build_router(mode: RuntimeMode, /*, forward_config: ForwardedHeadersConfi
         RuntimeMode::AuthOnly => Router::new().fallback(handler_auth_only),
     }
 }
+
+async fn handler_auth_only() -> (StatusCode, &'static str) {
+    (StatusCode::OK, "you are not a bot")
+}
+
+async fn handler_proxy(
+    State(state): State<Arc<ProxyState>>,
+    mut req: Request<Body>,
+) -> Result<Response<Body>, StatusCode> {
+    headers::strip_hop_by_hop(req.headers_mut());
+
+    let uri = rewrite_uri(
+        &state.target_scheme,
+        &state.target_authority,
+        req.uri(),
+        state.base_prefix.as_ref().map(BasePrefix::as_str),
+        state.strip_base_prefix,
+    )
+    .map_err(|_| StatusCode::BAD_GATEWAY);
+
+    *req.uri_mut() = uri;
+
+    if let Some(header_value) = state.target_host.as_ref() {
+        req.headers_mut().insert(HOST, header_value.clone());
+    }
+
+    todo!("optional upgrade");
+
+    let mut response = state
+        .client
+        .request(req)
+        .await
+        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+
+    headers::strip_hop_by_hop(response.headers_mut());
+
+    todo!("client upgrade");
+
+    Ok(response.map(Body::new))
+}
+
+fn rewrite_uri(
+    scheme: &Scheme,
+    authority: &Authority,
+    source: &Uri,
+    base_prefix: Option<&str>,
+    strip: bool,
+) -> Result<Uri, axum::http::Error> {
+    let incoming_pq = source.path_and_query().map(|pq| pq.as_str()).unwrap_or("/");
+    let owned_pq: String;
+
+    // These gimnastics aim to allocate only if we need to prepend '/'.
+    let pq = if strip {
+        if let Some(prefix) = base_prefix {
+            let stripped = incoming_pq.strip_prefix(prefix).unwrap_or(incoming_pq);
+            if stripped.is_empty() {
+                "/"
+            } else if stripped.starts_with('/') {
+                stripped
+            } else {
+                owned_pq = format!("/{stripped}");
+                owned_pq.as_str()
+            }
+        } else {
+            incoming_pq
+        }
+    } else {
+        incoming_pq
+    };
+
+    Uri::builder()
+        .scheme(scheme.clone())
+        .authority(authority.clone())
+        .path_and_query(pq)
+        .build()
+}
+
+fn build_client(insecure_skip_verify: bool, disable_keepalive: bool) -> HttpsClient {
+    let mut http = legacy::connect::HttpConnector::new();
+    http.enforce_http(false);
+
+    // TODO mikel: apply `--target-sni` flag.
+    // We're currently letting rustls handle it.
+
+    let https = if insecure_skip_verify {
+        let crypto = rustls::ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(tls::NilVerifier))
+            .with_no_client_auth();
+        HttpsConnectorBuilder::new()
+            .with_tls_config(crypto)
+            .https_or_http()
+            .enable_all_versions()
+            .wrap_connector(http)
+    } else {
+        HttpsConnectorBuilder::new()
+            .with_webpki_roots()
+            .https_or_http()
+            .enable_all_versions()
+            .wrap_connector(http)
+    };
+
+    let mut builder = legacy::Client::builder(TokioExecutor::new());
+    if disable_keepalive {
+        builder.pool_max_idle_per_host(0);
+    }
+    builder.build(https)
+}
+
 // Anubis allows invalid configurations and fails with 502 while proxying.
 // I've opted for failing fast and not allowing those states, at least for now.
 #[derive(Debug)]
