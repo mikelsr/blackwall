@@ -152,7 +152,7 @@ async fn handler_proxy(
         state.base_prefix.as_ref().map(BasePrefix::as_str),
         state.strip_base_prefix,
     )
-    .map_err(|_| StatusCode::BAD_GATEWAY);
+    .map_err(|_| StatusCode::BAD_GATEWAY)?;
 
     *req.uri_mut() = uri;
 
