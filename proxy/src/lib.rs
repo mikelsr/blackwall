@@ -21,6 +21,7 @@ use shared::config::{BasePrefix, PathRewriteConfig, ProxyConfig, Target};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::sync::Arc;
+use tracing::warn;
 use url::Url;
 
 pub struct ProxyState {
@@ -40,6 +41,13 @@ pub enum RuntimeMode {
 }
 
 impl RuntimeMode {
+    pub const fn name(&self) -> &'static str {
+        match self {
+            RuntimeMode::Proxy(_) => "proxy",
+            RuntimeMode::AuthOnly => "auth-only",
+        }
+    }
+
     pub fn from_config(config: ProxyConfig) -> Result<Self, ProxyInitError> {
         let ProxyConfig {
             target,
@@ -145,18 +153,31 @@ async fn handler_proxy(
     State(state): State<Arc<ProxyState>>,
     mut req: Request<Body>,
 ) -> Result<Response<Body>, StatusCode> {
+    let method = req.method().clone();
+    let request_uri = req.uri().clone();
+
     headers::strip_hop_by_hop(req.headers_mut());
 
-    let uri = rewrite_uri(
+    let uri = match rewrite_uri(
         &state.target_scheme,
         &state.target_authority,
         req.uri(),
         state.base_prefix.as_ref().map(BasePrefix::as_str),
         state.strip_base_prefix,
-    )
-    .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    ) {
+        Ok(uri) => uri,
+        Err(err) => {
+            warn!(
+                method = %method,
+                uri = %request_uri,
+                error = %err,
+                "failed to rewrite request URI"
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    };
 
-    *req.uri_mut() = uri;
+    *req.uri_mut() = uri.clone();
 
     if let Some(header_value) = state.target_host.as_ref() {
         req.headers_mut().insert(HOST, header_value.clone());
@@ -169,17 +190,29 @@ async fn handler_proxy(
         None
     };
 
-    let mut response = state
-        .client
-        .request(req)
-        .await
-        .map_err(|_| StatusCode::BAD_GATEWAY)?;
+    let mut response = match state.client.request(req).await {
+        Ok(response) => response,
+        Err(err) => {
+            warn!(
+                method = %method,
+                uri = %request_uri,
+                upstream_uri = %uri,
+                error = %err,
+                "upstream request failed"
+            );
+            return Err(StatusCode::BAD_GATEWAY);
+        }
+    };
 
     headers::strip_hop_by_hop(response.headers_mut());
 
     if let Some(client_upgrade) = client_upgrade {
         let target_upgrade = hyper::upgrade::on(&mut response);
-        tokio::spawn(async move { upgrade::upgrade_relay(client_upgrade, target_upgrade) });
+        tokio::spawn(async move {
+            if let Err(status) = upgrade::upgrade_relay(client_upgrade, target_upgrade).await {
+                warn!(status = %status, "upgrade relay failed");
+            }
+        });
     }
 
     Ok(response.map(Body::new))
