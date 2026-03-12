@@ -6,6 +6,7 @@ use axum::{
 };
 use hyper::upgrade::OnUpgrade;
 use tokio::io::copy_bidirectional;
+use tracing::debug;
 
 pub fn requests_upgrade(req: &Request<Body>) -> bool {
     let headers = req.headers();
@@ -31,10 +32,22 @@ pub async fn upgrade_relay(
     let (client, target) =
         tokio::try_join!(client_upgrade, target_upgrade).map_err(|_| StatusCode::BAD_GATEWAY)?;
 
+    debug!("upgrade relay established");
+
     let mut client = hyper_util::rt::TokioIo::new(client);
     let mut target = hyper_util::rt::TokioIo::new(target);
 
-    let _ = copy_bidirectional(&mut client, &mut target).await;
+    match copy_bidirectional(&mut client, &mut target).await {
+        Ok((client_to_target_bytes, target_to_client_bytes)) => {
+            debug!(
+                client_to_target_bytes,
+                target_to_client_bytes, "upgrade relay finished"
+            );
+        }
+        Err(err) => {
+            debug!(error = %err, "upgrade relay closed with I/O error");
+        }
+    }
 
     Ok(())
 }

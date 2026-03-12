@@ -15,6 +15,6 @@ www: # TODO: replace with proper web servers: http and unix sockets. Check Anubi
 	@ python3 -m http.server $(WWW_PORT) --directory test/shared/www
 
 www-proxy:
-	$(CARGO) run -p cli --bin blackwall -- \
+	RUST_LOG=$${RUST_LOG:-debug} $(CARGO) run -p cli --bin blackwall -- \
 		--bind 127.0.0.1:$(PROXY_PORT) \
 		--target http://127.0.0.1:$(WWW_PORT)

@@ -21,7 +21,7 @@ use shared::config::{BasePrefix, PathRewriteConfig, ProxyConfig, Target};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::sync::Arc;
-use tracing::warn;
+use tracing::{debug, warn};
 use url::Url;
 
 pub struct ProxyState {
@@ -184,6 +184,15 @@ async fn handler_proxy(
     }
 
     let upgrade_requested = upgrade::requests_upgrade(&req);
+    if upgrade_requested {
+        debug!(
+            method = %method,
+            uri = %request_uri,
+            upstream_uri = %uri,
+            "upgrade requested"
+        );
+    }
+
     let client_upgrade = if upgrade_requested {
         Some(hyper::upgrade::on(&mut req))
     } else {
