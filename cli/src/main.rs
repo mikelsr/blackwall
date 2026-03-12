@@ -1,4 +1,5 @@
 mod config;
+mod tls;
 
 use axum::serve;
 use proxy::{RuntimeMode, build_router};
@@ -24,6 +25,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         config::StartupMode::Run(cfg) => cfg,
     };
+
+    // Install the ring crypto provider as the default TLS provider,
+    // it seems it needs to be invoked explicitly.
+    tls::setup();
 
     let bind = cfg.listener.bind.clone();
 
