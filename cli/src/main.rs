@@ -2,6 +2,7 @@ mod config;
 
 use axum::serve;
 use proxy::{RuntimeMode, build_router};
+use shared::config::proxy as proxy_config;
 use std::net::SocketAddr;
 use tokio::{select, signal};
 
@@ -25,6 +26,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     let bind = cfg.listener.bind.clone();
+
+    let forwarded_config = proxy_config::ForwardedHeadersConfig {
+        xff_strip_private: cfg.proxy.xff_strip_private,
+        use_remote_address: cfg.proxy.use_remote_address,
+    };
+
     let mode = RuntimeMode::from_config(cfg.proxy)?;
     let app = build_router(mode, forwarded_config);
 
