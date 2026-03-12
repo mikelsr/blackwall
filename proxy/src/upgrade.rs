@@ -34,7 +34,7 @@ pub async fn upgrade_relay(
     let mut client = hyper_util::rt::TokioIo::new(client);
     let mut target = hyper_util::rt::TokioIo::new(target);
 
-    copy_bidirectional(&mut client, &mut target).await;
+    let _ = copy_bidirectional(&mut client, &mut target).await;
 
     Ok(())
 }

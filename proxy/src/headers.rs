@@ -1,9 +1,11 @@
 use axum::extract::ConnectInfo;
-use axum::http::{HeaderMap, HeaderValue, Request, Response, header};
+use axum::http::{HeaderMap, HeaderValue, Request, header};
 use smallvec::SmallVec;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
+
+use crate::config::ForwardedHeadersConfig;
 
 pub(crate) const X_FORWARDED_FOR: &str = "x-forwarded-for";
 pub(crate) const X_REAL_IP: &str = "x-real-ip";
@@ -52,15 +54,6 @@ fn extract_conn_headers(headers: &HeaderMap) -> SmallVec<[header::HeaderName; 4]
         .collect()
 }
 
-#[derive(Clone, Copy)]
-pub struct ForwardedHeadersConfig {
-    /// Whether to strip RFC1918 private IPs from XFF.
-    /// Loopback, CGNAT, and link-local are always stripped.
-    pub xff_strip_private: bool,
-    /// Whether to override X-Real-IP with the remote address.
-    pub use_remote_address: bool,
-}
-
 #[derive(Clone)]
 pub struct ForwardedHeaders<S> {
     inner: S,
@@ -99,7 +92,7 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, req: Request<B>) -> Self::Future {
+    fn call(&mut self, mut req: Request<B>) -> Self::Future {
         apply_forwarded_request_headers(&mut req, self.config);
         self.inner.call(req)
     }
