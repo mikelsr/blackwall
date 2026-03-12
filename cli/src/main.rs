@@ -25,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             println!("healthcheck not implemented yet");
             return Ok(());
         }
-        config::StartupMode::Run(cfg) => cfg,
+        config::StartupMode::Run(cfg) => *cfg,
     };
 
     log::init();

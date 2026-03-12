@@ -6,7 +6,6 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use proxy;
 use shared::config::{
     BasePrefix, PathRewriteConfig, ProxyConfig, Target, proxy::ForwardedHeadersConfig,
 };

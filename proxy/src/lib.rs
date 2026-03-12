@@ -16,7 +16,6 @@ use axum::{
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{client::legacy, rt::TokioExecutor};
-use rustls;
 use shared::config::{BasePrefix, PathRewriteConfig, ProxyConfig, Target};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
@@ -128,8 +127,8 @@ impl RuntimeMode {
             target_scheme: scheme,
             target_authority: authority,
             target_host,
-            base_prefix: base_prefix,
-            strip_base_prefix: strip_base_prefix,
+            base_prefix,
+            strip_base_prefix,
             client,
         })))
     }

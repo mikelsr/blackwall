@@ -120,13 +120,11 @@ fn apply_forwarded_request_headers<B>(req: &mut Request<B>, config: ForwardedHea
         req.headers_mut().insert(X_REAL_IP, new_value);
     }
 
-    if config.use_remote_address {
-        if let Ok(value) = HeaderValue::from_str(&source) {
-            req.headers_mut().insert(X_REAL_IP, value);
-        }
+    if config.use_remote_address
+        && let Ok(value) = HeaderValue::from_str(&source)
+    {
+        req.headers_mut().insert(X_REAL_IP, value);
     }
-
-    return;
 }
 
 /// This function mimics Anubis' behaviour:

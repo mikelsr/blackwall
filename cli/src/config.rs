@@ -11,7 +11,7 @@ pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum StartupMode {
-    Run(Config),
+    Run(Box<Config>),
     Version,
     Healthcheck,
 }
@@ -25,7 +25,7 @@ impl StartupMode {
             return Ok(StartupMode::Healthcheck);
         }
 
-        Ok(StartupMode::Run(args.into_config()?))
+        Ok(StartupMode::Run(Box::new(args.into_config()?)))
     }
 }
 

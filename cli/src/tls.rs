@@ -1,5 +1,3 @@
-use rustls;
-
 pub(crate) fn setup() {
     rustls::crypto::ring::default_provider()
         .install_default()

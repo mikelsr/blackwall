@@ -1,4 +1,3 @@
-use rustls;
 use rustls::{DigitallySignedStruct, Error, SignatureScheme, client::danger, crypto, pki_types};
 
 /// Verifies handshake signatures, but not certificates or hostnames

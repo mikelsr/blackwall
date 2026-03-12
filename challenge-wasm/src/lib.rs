@@ -1,5 +1,4 @@
 use challenge::solve as challenge_solve;
-use wasm_bindgen;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]

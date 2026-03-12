@@ -1,4 +1,3 @@
-use itoa;
 use sha2::{Digest, Sha256};
 
 /// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
