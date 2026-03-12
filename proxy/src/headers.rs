@@ -108,7 +108,6 @@ fn apply_forwarded_request_headers<B>(req: &mut Request<B>, config: ForwardedHea
     };
 
     let source = ip.to_string();
-    let client_header = HeaderValue::from_str(&source).ok();
 
     update_xff(req.headers_mut(), &source, config.xff_strip_private);
 
@@ -122,12 +121,8 @@ fn apply_forwarded_request_headers<B>(req: &mut Request<B>, config: ForwardedHea
     }
 
     if config.use_remote_address {
-        if let Some(addr) = client_header.clone() {
-            req.headers_mut().insert(X_REAL_IP, addr);
-        }
-    } else if !req.headers().contains_key(X_REAL_IP) {
-        if let Some(addr) = client_header {
-            req.headers_mut().insert(X_REAL_IP, addr);
+        if let Ok(value) = HeaderValue::from_str(&source) {
+            req.headers_mut().insert(X_REAL_IP, value);
         }
     }
 
@@ -150,19 +145,29 @@ fn update_xff(headers: &mut HeaderMap, remote_ip: &str, strip_private: bool) {
         format!("{original}, {remote_ip}")
     };
 
-    let mut updated = remote_ip;
+    let mut selected = None;
     for seg in combined.rsplit(',').map(str::trim) {
-        if let Ok(ip) = seg.parse::<IpAddr>() {
-            if is_ignored(&ip, strip_private) {
-                continue;
-            }
-            updated = seg;
+        let Ok(ip) = seg.parse::<IpAddr>() else {
             break;
+        };
+        if is_ignored(&ip, strip_private) {
+            continue;
         }
+        selected = Some(seg);
+        break;
     }
 
-    if let Ok(val) = HeaderValue::from_str(updated) {
-        headers.insert(X_FORWARDED_FOR, val);
+    match selected {
+        Some(seg) => {
+            if let Ok(value) = HeaderValue::from_str(seg) {
+                headers.insert(X_FORWARDED_FOR, value);
+            } else {
+                headers.remove(X_FORWARDED_FOR);
+            }
+        }
+        None => {
+            headers.remove(X_FORWARDED_FOR);
+        }
     }
 }
 
