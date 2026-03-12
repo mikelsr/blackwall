@@ -7,8 +7,8 @@ use tower::{Layer, Service};
 
 use shared::config::proxy::ForwardedHeadersConfig;
 
-pub(crate) const X_FORWARDED_FOR: &str = "x-forwarded-for";
-pub(crate) const X_REAL_IP: &str = "x-real-ip";
+pub const X_FORWARDED_FOR: &str = "x-forwarded-for";
+pub const X_REAL_IP: &str = "x-real-ip";
 pub(crate) const KEEP_ALIVE: &str = "keep-alive";
 pub(crate) const UPGRADE: &str = "upgrade";
 

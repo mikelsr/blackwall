@@ -1,4 +1,4 @@
-mod headers;
+pub mod headers;
 mod tls;
 mod upgrade;
 
