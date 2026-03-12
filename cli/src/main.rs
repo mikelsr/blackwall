@@ -174,3 +174,20 @@ async fn shutdown_signal() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_tcp_bind_addr;
+
+    #[test]
+    fn normalizes_port_only_bind_to_unspecified_ipv4() {
+        assert_eq!(normalize_tcp_bind_addr(":9090"), "0.0.0.0:9090");
+    }
+
+    #[test]
+    fn keeps_host_port_bind_as_is() {
+        assert_eq!(normalize_tcp_bind_addr("127.0.0.1:9090"), "127.0.0.1:9090");
+        assert_eq!(normalize_tcp_bind_addr("localhost:9090"), "localhost:9090");
+        assert_eq!(normalize_tcp_bind_addr("[::1]:9090"), "[::1]:9090");
+    }
+}

@@ -53,3 +53,42 @@ const fn health_metric_value(status: HealthStatus) -> u8 {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::{METRICS_CONTENT_TYPE, healthz, metrics};
+    use crate::health::{HealthState, HealthStatus};
+    use axum::{body::to_bytes, extract::State, response::IntoResponse};
+    use std::sync::Arc;
+
+    #[tokio::test]
+    async fn healthz_returns_expected_status_and_body() {
+        let state = Arc::new(HealthState::new(HealthStatus::NotServing));
+        let (status, body) = healthz(State(state.clone())).await;
+        assert_eq!(status, axum::http::StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(body, "NOT OK\n");
+
+        state.set(HealthStatus::Serving);
+        let (status, body) = healthz(State(state.clone())).await;
+        assert_eq!(status, axum::http::StatusCode::OK);
+        assert_eq!(body, "OK\n");
+
+        state.set(HealthStatus::Unknown);
+        let (status, body) = healthz(State(state)).await;
+        assert_eq!(status, axum::http::StatusCode::FAILED_DEPENDENCY);
+        assert_eq!(body, "UNKNOWN\n");
+    }
+
+    #[tokio::test]
+    async fn metrics_returns_prometheus_text_with_health_value() {
+        let state = Arc::new(HealthState::new(HealthStatus::Serving));
+        let response = metrics(State(state)).await.into_response();
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], METRICS_CONTENT_TYPE);
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("# TYPE blackwall_health_status gauge"));
+        assert!(body.contains("blackwall_health_status 2"));
+    }
+}
