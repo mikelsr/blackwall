@@ -2,6 +2,8 @@ mod headers;
 mod tls;
 mod upgrade;
 
+use shared::config::proxy::ForwardedHeadersConfig;
+
 use axum::{
     Router,
     body::Body,
@@ -125,12 +127,12 @@ impl RuntimeMode {
     }
 }
 
-pub fn build_router(mode: RuntimeMode, /*, forward_config: ForwardedHeadersConfig */) -> Router {
+pub fn build_router(mode: RuntimeMode, forward_config: ForwardedHeadersConfig) -> Router {
     match mode {
         RuntimeMode::Proxy(state) => Router::new()
             .fallback(handler_proxy)
-            .with_state(Arc::new(*state)), // TODO mikel
-        // .layer(forward_config),
+            .with_state(Arc::new(*state))
+            .layer(headers::ForwardedHeadersLayer::new(forward_config)),
         RuntimeMode::AuthOnly => Router::new().fallback(handler_auth_only),
     }
 }

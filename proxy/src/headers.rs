@@ -5,7 +5,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 
-use crate::config::ForwardedHeadersConfig;
+use shared::config::proxy::ForwardedHeadersConfig;
 
 pub(crate) const X_FORWARDED_FOR: &str = "x-forwarded-for";
 pub(crate) const X_REAL_IP: &str = "x-real-ip";
