@@ -1,6 +1,7 @@
 use clap::Parser;
 use shared::config::{
-    BindNetwork, Config, ConfigError, ListenerConfig, PathRewriteConfig, ProxyConfig, Target,
+    BindNetwork, Config, ConfigError, ListenerConfig, MetricsConfig, PathRewriteConfig,
+    ProxyConfig, Target,
 };
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
@@ -13,7 +14,7 @@ pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
 pub(crate) enum StartupMode {
     Run(Box<Config>),
     Version,
-    Healthcheck,
+    Healthcheck(HealthcheckConfig),
 }
 
 impl StartupMode {
@@ -22,31 +23,34 @@ impl StartupMode {
             return Ok(StartupMode::Version);
         }
         if args.health {
-            return Ok(StartupMode::Healthcheck);
+            return Ok(StartupMode::Healthcheck(HealthcheckConfig {
+                metrics_bind: args.metrics_bind,
+            }));
         }
 
         Ok(StartupMode::Run(Box::new(args.into_config()?)))
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HealthcheckConfig {
+    pub metrics_bind: String,
+}
+
 impl RawArgs {
     fn into_config(self) -> Result<Config, ConfigError> {
-        let target_host = if self.target_host.is_empty() {
-            None
-        } else {
-            Some(self.target_host)
-        };
-        let target_sni = if self.target_sni.is_empty() {
-            None
-        } else {
-            Some(self.target_sni)
-        };
+        let target_host = non_empty(self.target_host);
+        let target_sni = non_empty(self.target_sni);
         let path_rewrite = PathRewriteConfig::parse(self.base_prefix, self.strip_base_prefix)?;
 
         Ok(Config {
             listener: ListenerConfig {
                 bind: self.bind,
                 network: BindNetwork::parse(self.bind_network)?,
+            },
+            metrics: MetricsConfig {
+                bind: self.metrics_bind,
+                network: BindNetwork::parse(self.metrics_bind_network)?,
             },
             proxy: ProxyConfig {
                 target: Target::parse(self.target.as_str())?,
@@ -60,6 +64,10 @@ impl RawArgs {
             },
         })
     }
+}
+
+fn non_empty(value: String) -> Option<String> {
+    if value.is_empty() { None } else { Some(value) }
 }
 
 #[derive(Parser)]
@@ -76,6 +84,16 @@ struct RawArgs {
     /// Network family to bind HTTP to, e.g. unix, tcp
     #[arg(long = "bind-network", env = "BIND_NETWORK", default_value = "tcp")]
     pub(super) bind_network: String,
+
+    #[arg(long = "metrics-bind", env = "METRICS_BIND", default_value = ":9090")]
+    pub(super) metrics_bind: String,
+
+    #[arg(
+        long = "metrics-bind-network",
+        env = "METRICS_BIND_NETWORK",
+        default_value = "tcp"
+    )]
+    pub(super) metrics_bind_network: String,
 
     /// If true, strips the base prefix from requests forwarded to the target server
     #[arg(

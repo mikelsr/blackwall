@@ -5,11 +5,18 @@ use url::Url;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
     pub listener: ListenerConfig,
+    pub metrics: MetricsConfig,
     pub proxy: ProxyConfig,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ListenerConfig {
+    pub bind: String,
+    pub network: BindNetwork,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetricsConfig {
     pub bind: String,
     pub network: BindNetwork,
 }
