@@ -1,3 +1,5 @@
+/// This create is kept minimal to ensure WASM files remain as compact as possible.
+/// The rest of the challenge code is at /shared/src/challenge.rs.
 use sha2::{Digest, Sha256};
 
 /// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
