@@ -4,4 +4,19 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-trait = "0.1.89"
+bytes = "1.11.1"
+serde = { version = "1.0.228", features = ["derive", "std"] }
 url = "2.5.8"
+compact_str = { version = "0.9.0", features = ["serde"] }
+uuid = { version = "1.15.1", features = ["v7", "serde"] }
+dashmap = "6.1.0"
+rustc-hash = "2.1.1"
+tokio = { version = "1.43.0", features = ["time"] }
+
+[dev-dependencies]
+tokio = { version = "1.43.0", features = ["full"] }
+
+[lib]
+test = false
+doctest = false
