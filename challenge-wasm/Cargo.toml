@@ -8,3 +8,5 @@ challenge = { version = "0.1.0", path = "../challenge" }
 wasm-bindgen = "0.2.114"
 [lib]
 crate-type = ["cdylib", "rlib"]
+test = false
+doctest = false
