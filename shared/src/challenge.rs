@@ -50,6 +50,7 @@ pub mod memory {
     use dashmap::DashMap;
     use rustc_hash::FxHasher;
     use std::collections::VecDeque;
+    use std::default::Default;
     use std::hash::BuildHasherDefault;
     use std::sync::{Arc, Mutex, Weak};
     use std::time::{Duration, Instant};
@@ -117,6 +118,12 @@ pub mod memory {
         }
     }
 
+    impl Default for MemoryChallengeRepository {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
     #[async_trait]
     impl ChallengeRepository for MemoryChallengeRepository {
         async fn insert(&self, record: &ChallengeRecord, ttl: Duration) -> Result<(), StoreError> {
@@ -126,7 +133,7 @@ pub mod memory {
                 record.id,
                 Entry {
                     record: record.clone(),
-                    expires_at: expires_at,
+                    expires_at,
                 },
             );
             // Register for cleanup.
