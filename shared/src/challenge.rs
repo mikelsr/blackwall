@@ -53,13 +53,14 @@ pub mod memory {
     use std::default::Default;
     use std::hash::BuildHasherDefault;
     use std::sync::{Arc, Mutex, Weak};
-    use std::time::{Duration, Instant};
-    use tokio::time::sleep;
+    use std::time::Duration;
+    use tokio::time::{Instant, sleep};
     use uuid::Uuid;
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
 
     // A DashMap with FxHasher for fast key lookups.
+    // The idea is to have a scaling concurrent map with non-cryptographic hashing.
     type DashFxMap<K, V> = DashMap<K, V, BuildHasherDefault<FxHasher>>;
 
     pub struct MemoryChallengeRepository {
