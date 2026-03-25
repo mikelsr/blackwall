@@ -159,4 +159,121 @@ pub mod memory {
             }
         }
     }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use std::collections::BTreeMap;
+        use std::time::SystemTime;
+        use tokio::time::{advance, pause};
+
+        fn mock_record(id: Uuid) -> ChallengeRecord {
+            ChallengeRecord {
+                issued_at: SystemTime::now(),
+                metadata: BTreeMap::new(),
+                id,
+                method: "sha256".into(),
+                random_data: "test_data".to_string(),
+                difficulty: 1,
+                spent: false,
+            }
+        }
+
+        #[tokio::test]
+        async fn test_memory_repo_insert_and_consume() {
+            let repo = MemoryChallengeRepository::new();
+            let id = Uuid::now_v7();
+            let record = mock_record(id);
+
+            repo.insert(&record, Duration::from_secs(60))
+                .await
+                .expect("insert failed");
+
+            let consumed = repo.consume_once(&id).await.expect("consume failed");
+
+            assert_eq!(consumed.id, id);
+            assert_eq!(consumed.random_data, "test_data");
+        }
+
+        #[tokio::test]
+        async fn test_memory_repo_consume_is_atomic() {
+            let repo = MemoryChallengeRepository::new();
+            let id = Uuid::now_v7();
+            let record = mock_record(id);
+
+            repo.insert(&record, Duration::from_secs(60)).await.unwrap();
+
+            // First consumption succeeds
+            assert!(repo.consume_once(&id).await.is_ok());
+
+            // Second consumption fails (it was removed)
+            let second = repo.consume_once(&id).await;
+            assert!(matches!(second, Err(ConsumeError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_memory_repo_expiration_logic() {
+            pause(); // Control time
+            let repo = MemoryChallengeRepository::new();
+            let id = Uuid::now_v7();
+            let record = mock_record(id);
+
+            // Insert with 1s TTL
+            repo.insert(&record, Duration::from_secs(1)).await.unwrap();
+
+            // Advance time by 2s
+            advance(Duration::from_secs(2)).await;
+
+            // Should be expired
+            let result = repo.consume_once(&id).await;
+            assert!(matches!(result, Err(ConsumeError::NotFound)));
+        }
+
+        #[tokio::test]
+        async fn test_expiration_task() {
+            pause();
+            let repo = MemoryChallengeRepository::new();
+            let id = Uuid::now_v7();
+            let record = mock_record(id);
+
+            // Insert with very short TTL
+            repo.insert(&record, Duration::from_millis(100))
+                .await
+                .unwrap();
+
+            // Advance time past the CLEANUP_INTERVAL (10s)
+            for _ in 0..11 {
+                advance(Duration::from_secs(1)).await;
+                // yield_now is not always enough to trigger background task in mock time
+                // sometimes we need to sleep for a tiny bit of mock time
+                sleep(Duration::from_millis(1)).await;
+            }
+
+            // The janitor should have run.
+            // We verify by checking that the map no longer contains the ID.
+            assert!(repo.inner.map.is_empty());
+        }
+
+        #[tokio::test]
+        async fn test_concurrent_access_safety() {
+            let repo = Arc::new(MemoryChallengeRepository::new());
+            let mut handles = Vec::new();
+
+            for _i in 0..100 {
+                let r = repo.clone();
+                handles.push(tokio::spawn(async move {
+                    let id = Uuid::now_v7();
+                    let record = mock_record(id);
+                    r.insert(&record, Duration::from_secs(60)).await.unwrap();
+                    let _ = r.consume_once(&id).await.unwrap();
+                }));
+            }
+
+            for h in handles {
+                h.await.unwrap();
+            }
+
+            assert!(repo.inner.map.is_empty());
+        }
+    }
 }
