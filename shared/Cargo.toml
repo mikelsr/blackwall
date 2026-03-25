@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-bytes = "1.11.1"
+bytes = { version = "1.11.1", features = ["serde"] }
 serde = { version = "1.0.228", features = ["derive", "std"] }
 url = "2.5.8"
 compact_str = { version = "0.9.0", features = ["serde"] }
@@ -13,10 +13,10 @@ uuid = { version = "1.15.1", features = ["v7", "serde"] }
 challenge = { path = "../challenge" }
 dashmap = "6.1.0"
 rustc-hash = "2.1.1"
-tokio = { version = "1.43.0", features = ["time"] }
+tokio = { version = "1.43.0", features = ["macros", "rt", "sync", "time"] }
 
 [dev-dependencies]
-tokio = { version = "1.43.0", features = ["full", "test-util"] }
+tokio = { version = "1.43.0", features = ["full", "sync", "test-util"] }
 
 [lib]
 test = false

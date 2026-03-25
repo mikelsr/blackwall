@@ -2,6 +2,7 @@ use crate::store::StoreError;
 use std::{collections::BTreeMap, time::SystemTime};
 use uuid::Uuid;
 
+use bytes::Bytes;
 use compact_str::CompactString;
 use serde;
 
@@ -16,7 +17,7 @@ pub const TEST_COOKIE_NAME: &str = "techaro.lol-anubis-cookie-verification";
 pub struct Challenge {
     pub id: Uuid,
     #[serde(rename = "randomData")]
-    pub random_data: String,
+    pub random_data: Bytes,
     pub difficulty: u32,
 }
 
@@ -35,7 +36,7 @@ pub struct ChallengeRecord {
     pub id: Uuid,
     pub method: CompactString, // I expect them to always fit in a CompactString
     #[serde(rename = "randomData")]
-    pub random_data: String,
+    pub random_data: Bytes,
     pub difficulty: u32,
     pub spent: bool,
 }
@@ -64,9 +65,9 @@ pub async fn verify_solution(
     let record = repo
         .consume_once(&solution.id)
         .await
-        .map_err(|e| VerificationError::Consume(e))?;
+        .map_err(VerificationError::Consume)?;
 
-    let hash = challenge::compute_hash(record.random_data.as_bytes(), solution.nonce);
+    let hash = challenge::compute_hash(&record.random_data, solution.nonce);
 
     if !challenge::check_difficulty(&hash, record.difficulty) {
         return Err(VerificationError::InvalidSolution);
@@ -90,9 +91,10 @@ pub mod memory {
     use std::collections::VecDeque;
     use std::default::Default;
     use std::hash::BuildHasherDefault;
-    use std::sync::{Arc, Mutex, Weak};
+    use std::sync::{Arc, Weak};
     use std::time::Duration;
-    use tokio::time::{Instant, sleep};
+    use tokio::sync::mpsc;
+    use tokio::time::Instant;
     use uuid::Uuid;
 
     const CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
@@ -103,11 +105,11 @@ pub mod memory {
 
     pub struct MemoryChallengeRepository {
         inner: Arc<Inner>,
+        cleanup_tx: mpsc::UnboundedSender<Expiry>,
     }
 
     struct Inner {
         map: DashFxMap<Uuid, Entry>,
-        cleanup_queue: Mutex<VecDeque<(Instant, Uuid)>>,
     }
 
     pub struct Entry {
@@ -115,42 +117,61 @@ pub mod memory {
         expires_at: Instant,
     }
 
+    struct Expiry {
+        challenge_id: Uuid,
+        expires_at: Instant,
+    }
+
     impl MemoryChallengeRepository {
         pub fn new() -> Self {
+            let (tx, rx) = mpsc::unbounded_channel();
             let inner = Arc::new(Inner {
                 map: DashFxMap::default(),
-                cleanup_queue: Mutex::new(VecDeque::new()),
             });
 
-            Self::start_expiration(Arc::downgrade(&inner), CLEANUP_INTERVAL);
+            Self::start_expiration(Arc::downgrade(&inner), rx, CLEANUP_INTERVAL);
 
-            Self { inner }
+            Self {
+                inner,
+                cleanup_tx: tx,
+            }
         }
 
         /// Spawns a background task that periodically checks the
         /// cleanup queue and removes expired entries.
-        fn start_expiration(weak_state: Weak<Inner>, interval: Duration) {
+        fn start_expiration(
+            weak_state: Weak<Inner>,
+            mut rx: mpsc::UnboundedReceiver<Expiry>,
+            interval: Duration,
+        ) {
             tokio::spawn(async move {
-                while let Some(state) = weak_state.upgrade() {
-                    sleep(interval).await;
+                let mut local_queue: VecDeque<Expiry> = VecDeque::new();
+                let mut cleanup_timer = tokio::time::interval(interval);
 
-                    let now = Instant::now();
-                    let mut expired_ids = Vec::new();
-
-                    {
-                        let mut queue = state.cleanup_queue.lock().unwrap();
-                        while let Some((expiry, id)) = queue.front() {
-                            if *expiry <= now {
-                                expired_ids.push(*id);
-                                queue.pop_front();
-                            } else {
+                loop {
+                    tokio::select! {
+                        // Receive new cleanup tasks.
+                        Some(item) = rx.recv() => {
+                            local_queue.push_back(item);
+                        }
+                        // Periodically cleanup expired items.
+                        _ = cleanup_timer.tick() => {
+                            let Some(state) = weak_state.upgrade() else {
                                 break;
+                            };
+
+                            let now = Instant::now();
+                            while let Some(expiry) = local_queue.front() {
+                                if expiry.expires_at <= now {
+                                    let id = expiry.challenge_id;
+                                    local_queue.pop_front();
+                                    state.map.remove(&id);
+                                } else {
+                                    break;
+                                }
                             }
                         }
-                    }
-
-                    for id in expired_ids {
-                        state.map.remove(&id);
+                        else => break,
                     }
                 }
             });
@@ -169,19 +190,12 @@ pub mod memory {
             let expires_at = Instant::now() + ttl;
             let id = record.id;
             // Insert into the sharded map.
-            self.inner.map.insert(
-                id,
-                Entry {
-                    record: record.clone(),
-                    expires_at,
-                },
-            );
+            self.inner.map.insert(id, Entry { record, expires_at });
             // Register for cleanup.
-            self.inner
-                .cleanup_queue
-                .lock()
-                .unwrap()
-                .push_back((expires_at, id));
+            let _ = self.cleanup_tx.send(Expiry {
+                challenge_id: id,
+                expires_at: expires_at,
+            });
             Ok(())
         }
 
@@ -202,9 +216,10 @@ pub mod memory {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use bytes::Bytes;
         use std::collections::BTreeMap;
         use std::time::SystemTime;
-        use tokio::time::{advance, pause};
+        use tokio::time::{advance, pause, sleep};
 
         fn mock_record(id: Uuid) -> ChallengeRecord {
             ChallengeRecord {
@@ -212,7 +227,7 @@ pub mod memory {
                 metadata: BTreeMap::new(),
                 id,
                 method: "sha256".into(),
-                random_data: "test_data".to_string(),
+                random_data: Bytes::from_static(b"test_data"),
                 difficulty: 1,
                 spent: false,
             }
@@ -231,7 +246,7 @@ pub mod memory {
             let consumed = repo.consume_once(&id).await.expect("consume failed");
 
             assert_eq!(consumed.id, id);
-            assert_eq!(consumed.random_data, "test_data");
+            assert_eq!(consumed.random_data, Bytes::from_static(b"test_data"));
         }
 
         #[tokio::test]
