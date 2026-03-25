@@ -51,7 +51,7 @@ pub enum ConsumeError {
 pub trait ChallengeRepository {
     async fn insert(
         &self,
-        record: &ChallengeRecord,
+        record: ChallengeRecord,
         ttl: std::time::Duration,
     ) -> Result<(), StoreError>;
     async fn consume_once(&self, id: &Uuid) -> Result<ChallengeRecord, ConsumeError>;
@@ -165,11 +165,12 @@ pub mod memory {
 
     #[async_trait]
     impl ChallengeRepository for MemoryChallengeRepository {
-        async fn insert(&self, record: &ChallengeRecord, ttl: Duration) -> Result<(), StoreError> {
+        async fn insert(&self, record: ChallengeRecord, ttl: Duration) -> Result<(), StoreError> {
             let expires_at = Instant::now() + ttl;
+            let id = record.id;
             // Insert into the sharded map.
             self.inner.map.insert(
-                record.id,
+                id,
                 Entry {
                     record: record.clone(),
                     expires_at,
@@ -180,7 +181,7 @@ pub mod memory {
                 .cleanup_queue
                 .lock()
                 .unwrap()
-                .push_back((expires_at, record.id));
+                .push_back((expires_at, id));
             Ok(())
         }
 
@@ -223,7 +224,7 @@ pub mod memory {
             let id = Uuid::now_v7();
             let record = mock_record(id);
 
-            repo.insert(&record, Duration::from_secs(60))
+            repo.insert(record, Duration::from_secs(60))
                 .await
                 .expect("insert failed");
 
@@ -239,7 +240,7 @@ pub mod memory {
             let id = Uuid::now_v7();
             let record = mock_record(id);
 
-            repo.insert(&record, Duration::from_secs(60)).await.unwrap();
+            repo.insert(record, Duration::from_secs(60)).await.unwrap();
 
             // First consumption succeeds
             assert!(repo.consume_once(&id).await.is_ok());
@@ -257,7 +258,7 @@ pub mod memory {
             let record = mock_record(id);
 
             // Insert with 1s TTL
-            repo.insert(&record, Duration::from_secs(1)).await.unwrap();
+            repo.insert(record, Duration::from_secs(1)).await.unwrap();
 
             // Advance time by 2s
             advance(Duration::from_secs(2)).await;
@@ -275,7 +276,7 @@ pub mod memory {
             let record = mock_record(id);
 
             // Insert with very short TTL
-            repo.insert(&record, Duration::from_millis(100))
+            repo.insert(record, Duration::from_millis(100))
                 .await
                 .unwrap();
 
@@ -302,7 +303,7 @@ pub mod memory {
                 handles.push(tokio::spawn(async move {
                     let id = Uuid::now_v7();
                     let record = mock_record(id);
-                    r.insert(&record, Duration::from_secs(60)).await.unwrap();
+                    r.insert(record, Duration::from_secs(60)).await.unwrap();
                     let _ = r.consume_once(&id).await.unwrap();
                 }));
             }
