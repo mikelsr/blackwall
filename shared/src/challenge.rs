@@ -13,6 +13,21 @@ pub const COOKIE_NAME: &str = "techaro.lol-anubis";
 pub const TEST_COOKIE_NAME: &str = "techaro.lol-anubis-cookie-verification";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Challenge {
+    pub id: Uuid,
+    #[serde(rename = "randomData")]
+    pub random_data: String,
+    pub difficulty: u32,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Solution {
+    pub id: Uuid,
+    #[serde(rename = "randomData")]
+    pub nonce: u64,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ChallengeRecord {
     #[serde(rename = "issuedAt")]
     pub issued_at: SystemTime,
@@ -40,6 +55,29 @@ pub trait ChallengeRepository {
         ttl: std::time::Duration,
     ) -> Result<(), StoreError>;
     async fn consume_once(&self, id: &Uuid) -> Result<ChallengeRecord, ConsumeError>;
+}
+
+pub async fn verify_solution(
+    repo: &dyn ChallengeRepository,
+    solution: &Solution,
+) -> Result<(), VerificationError> {
+    let record = repo
+        .consume_once(&solution.id)
+        .await
+        .map_err(|e| VerificationError::Consume(e))?;
+
+    let hash = challenge::compute_hash(record.random_data.as_bytes(), solution.nonce);
+
+    if !challenge::check_difficulty(&hash, record.difficulty) {
+        return Err(VerificationError::InvalidSolution);
+    }
+
+    Ok(())
+}
+
+pub enum VerificationError {
+    InvalidSolution,
+    Consume(ConsumeError),
 }
 
 pub mod memory {
