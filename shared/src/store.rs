@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use serde::Serialize;
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 
@@ -20,7 +21,7 @@ pub trait KvStore: Send + Sync {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Serialize)]
 pub enum StoreError {
     NotFound,
     InvalidData,

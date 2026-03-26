@@ -122,7 +122,7 @@ impl BasePrefix {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChallengeConfig {
-    pub difficulty: u8,
+    pub difficulty: u32,
     pub ttl: Duration,
     pub secret: Bytes,
     pub cookie_secure: bool,
@@ -130,7 +130,7 @@ pub struct ChallengeConfig {
 
 impl ChallengeConfig {
     pub fn parse(
-        difficulty: u8,
+        difficulty: u32,
         ttl: Duration,
         secret: Option<String>,
         cookie_secure: bool,

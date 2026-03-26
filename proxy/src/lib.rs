@@ -1,10 +1,14 @@
 mod auth;
+mod embed;
+mod handler;
 pub mod headers;
-mod middleware;
 mod tls;
 mod upgrade;
 
-use shared::config::proxy::ForwardedHeadersConfig;
+use shared::{
+    challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
+    config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
+};
 
 use axum::{
     Router,
@@ -25,6 +29,8 @@ use std::sync::Arc;
 use tracing::{debug, warn};
 use url::Url;
 
+use crate::auth::TokenService;
+
 pub struct ProxyState {
     target_scheme: Scheme,
     target_authority: Authority,
@@ -32,6 +38,13 @@ pub struct ProxyState {
     base_prefix: Option<BasePrefix>,
     strip_base_prefix: bool,
     client: HttpsClient,
+    challenge_service: ChallengeService,
+}
+
+pub struct ChallengeService {
+    token_service: TokenService,
+    challenge_repo: Arc<dyn ChallengeRepository + Send + Sync>,
+    challenge_config: ChallengeConfig,
 }
 
 type HttpsClient = legacy::Client<HttpsConnector<legacy::connect::HttpConnector>, Body>;
@@ -67,6 +80,7 @@ impl RuntimeMode {
                 insecure_skip_verify,
                 disable_keepalive,
                 url,
+                config.challenge,
                 Scheme::HTTP,
             ),
             Target::Https(url) => Self::build_proxy_state(
@@ -75,6 +89,7 @@ impl RuntimeMode {
                 insecure_skip_verify,
                 disable_keepalive,
                 url,
+                config.challenge,
                 Scheme::HTTPS,
             ),
         }
@@ -88,6 +103,7 @@ impl RuntimeMode {
         insecure_skip_verify: bool,
         disable_keepalive: bool,
         url: Url,
+        challenge_config: ChallengeConfig,
         scheme: Scheme,
     ) -> Result<RuntimeMode, ProxyInitError> {
         let Some(host) = url.host_str() else {
@@ -125,6 +141,7 @@ impl RuntimeMode {
         };
 
         let client = build_client(insecure_skip_verify, disable_keepalive);
+        let challenge_service = build_challenge_service(challenge_config);
         Ok(RuntimeMode::Proxy(Box::new(ProxyState {
             target_scheme: scheme,
             target_authority: authority,
@@ -132,7 +149,16 @@ impl RuntimeMode {
             base_prefix,
             strip_base_prefix,
             client,
+            challenge_service,
         })))
+    }
+}
+
+pub fn build_challenge_service(challenge_config: ChallengeConfig) -> ChallengeService {
+    ChallengeService {
+        token_service: TokenService::new(&challenge_config.secret),
+        challenge_repo: Arc::new(MemoryChallengeRepository::new()),
+        challenge_config,
     }
 }
 

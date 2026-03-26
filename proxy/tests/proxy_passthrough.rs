@@ -7,10 +7,11 @@ use axum::{
     routing::any,
 };
 use shared::config::{
-    BasePrefix, PathRewriteConfig, ProxyConfig, Target, proxy::ForwardedHeadersConfig,
+    BasePrefix, ChallengeConfig, PathRewriteConfig, ProxyConfig, Target,
+    proxy::ForwardedHeadersConfig,
 };
-use std::net::SocketAddr;
 use std::sync::Once;
+use std::{net::SocketAddr, time::Duration};
 use tokio::net::TcpListener;
 use url::Url;
 
@@ -62,6 +63,7 @@ fn proxy_config() -> ProxyConfig {
         use_remote_address: false,
         xff_strip_private: true,
         path_rewrite: None,
+        challenge: ChallengeConfig::parse(10, Duration::from_secs(30), None, false).unwrap(),
     }
 }
 

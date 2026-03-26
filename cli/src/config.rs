@@ -6,7 +6,6 @@ use shared::config::{
     BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
     PathRewriteConfig, ProxyConfig, Target,
 };
-use tracing::warn;
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let _ = dotenvy::dotenv();
@@ -47,7 +46,7 @@ impl RawArgs {
         let target_sni = non_empty(self.target_sni);
         let path_rewrite = PathRewriteConfig::parse(self.base_prefix, self.strip_base_prefix)?;
         let challenge_config = ChallengeConfig::parse(
-            self.difficulty,
+            self.challenge_difficulty,
             self.challenge_ttl,
             self.challenge_secret,
             self.cookie_secure,
