@@ -1,4 +1,6 @@
+mod auth;
 pub mod headers;
+mod middleware;
 mod tls;
 mod upgrade;
 

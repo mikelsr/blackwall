@@ -1,8 +1,12 @@
+use std::time::Duration;
+
 use clap::Parser;
+use humantime::parse_duration;
 use shared::config::{
-    BindNetwork, Config, ConfigError, ListenerConfig, MetricsConfig, PathRewriteConfig,
-    ProxyConfig, Target,
+    BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
+    PathRewriteConfig, ProxyConfig, Target,
 };
+use tracing::warn;
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let _ = dotenvy::dotenv();
@@ -42,6 +46,12 @@ impl RawArgs {
         let target_host = non_empty(self.target_host);
         let target_sni = non_empty(self.target_sni);
         let path_rewrite = PathRewriteConfig::parse(self.base_prefix, self.strip_base_prefix)?;
+        let challenge_config = ChallengeConfig::parse(
+            self.difficulty,
+            self.challenge_ttl,
+            self.challenge_secret,
+            self.cookie_secure,
+        )?;
 
         Ok(Config {
             listener: ListenerConfig {
@@ -61,6 +71,7 @@ impl RawArgs {
                 use_remote_address: self.use_remote_address,
                 xff_strip_private: self.xff_strip_private,
                 path_rewrite,
+                challenge: challenge_config,
             },
         })
     }
@@ -150,6 +161,27 @@ struct RawArgs {
         default_value_t = true
     )]
     pub(super) xff_strip_private: bool,
+
+    /// Challenge difficulty (number of leading 0 hex digits)
+    #[arg(
+        long = "challenge-difficulty",
+        env = "CHALLENGE_DIFFICULTY",
+        default_value_t = 4
+    )]
+    pub(super) challenge_difficulty: u32,
+
+    /// Time-to-live for the challenge session (e.g. 1h, 15m)
+    #[arg(long = "challenge-ttl", env = "CHALLENGE_TTL", default_value = "1h", value_parser = parse_duration)]
+    pub(super) challenge_ttl: Duration,
+
+    // TODO mikel: HS512
+    /// ED25519 private key seed for signing JWTs. 32 bytes, base64 encoded.
+    #[arg(long = "challenge-secret", env = "CHALLENGE_SECRET")]
+    pub(super) challenge_secret: Option<String>,
+
+    /// If true, the session cookie will only be sent over HTTPS
+    #[arg(long = "cookie-secure", env = "COOKIE_SECURE", default_value_t = false)]
+    pub(super) cookie_secure: bool,
 
     // Startup modes
     /// Run a health check against Blackwall

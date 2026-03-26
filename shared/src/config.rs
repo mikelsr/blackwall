@@ -1,5 +1,10 @@
+use base64::{Engine as _, engine::general_purpose};
+use bytes::Bytes;
+use rand::random;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::time::Duration;
+use tracing::warn;
 use url::Url;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +36,7 @@ pub struct ProxyConfig {
     pub use_remote_address: bool,
     pub xff_strip_private: bool,
     pub path_rewrite: Option<PathRewriteConfig>,
+    pub challenge: ChallengeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -114,6 +120,50 @@ impl BasePrefix {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChallengeConfig {
+    pub difficulty: u8,
+    pub ttl: Duration,
+    pub secret: Bytes,
+    pub cookie_secure: bool,
+}
+
+impl ChallengeConfig {
+    pub fn parse(
+        difficulty: u8,
+        ttl: Duration,
+        secret: Option<String>,
+        cookie_secure: bool,
+    ) -> Result<Self, ConfigError> {
+        let validated_secret = Self::validate_or_generate_secret(secret)?;
+        Ok(Self {
+            difficulty,
+            ttl,
+            secret: validated_secret,
+            cookie_secure,
+        })
+    }
+
+    // TODO mikel: validation only works for Ed25519 currently
+    fn validate_or_generate_secret(secret: Option<String>) -> Result<Bytes, ConfigError> {
+        match secret {
+            Some(encoded_secret) => {
+                let decoded_secret = general_purpose::STANDARD.decode(encoded_secret).unwrap();
+                let raw_secret: [u8; 32] = decoded_secret
+                    .try_into()
+                    .map_err(|_| ConfigError::InvalidSecretLength)?;
+                Ok(Bytes::copy_from_slice(&raw_secret))
+            }
+            None => {
+                // Generate a random key if none is provided.
+                warn!("No challenge secret provided, generating a random key.");
+                let raw_key: [u8; 32] = random();
+                Ok(Bytes::copy_from_slice(&raw_key))
+            }
+        }
+    }
+}
+
 impl BasePrefix {
     pub fn parse(value: String) -> Result<Option<Self>, ConfigError> {
         if value.is_empty() {
@@ -160,6 +210,8 @@ pub enum ConfigError {
         reason: &'static str,
     },
     StripBasePrefixRequiresBasePrefix,
+    InvalidSecretEncoding,
+    InvalidSecretLength,
 }
 
 impl Display for ConfigError {
@@ -189,6 +241,12 @@ impl Display for ConfigError {
             }
             ConfigError::StripBasePrefixRequiresBasePrefix => {
                 write!(f, "strip-base-prefix=true requires a non-empty base-prefix")
+            }
+            ConfigError::InvalidSecretEncoding => {
+                write!(f, "invalid secret encoding or format")
+            }
+            ConfigError::InvalidSecretLength => {
+                write!(f, "invalid secret length")
             }
         }
     }
