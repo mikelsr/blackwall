@@ -1,7 +1,6 @@
 VERSION := $(shell cat ./VERSION)
 CARGO ?= cargo
-WWW_PORT ?= 3923
-PROXY_PORT ?= 8923
+WWW_PORT ?= 3000
 
 .PHONY: build prebaked-build www www-proxy
 
@@ -17,6 +16,4 @@ www: # TODO: replace with proper web servers: http and unix sockets. Check Anubi
 www-proxy:
 	set -a \
 	&& . run/default.env \
-	&& $(CARGO) run --verbose -p cli --bin blackwall -- \
-		--bind 127.0.0.1:$(PROXY_PORT) \
-		--target http://127.0.0.1:$(WWW_PORT)
+	&& $(CARGO) run --verbose -p cli --bin blackwall
