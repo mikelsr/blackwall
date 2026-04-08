@@ -1,11 +1,13 @@
 use compact_str::{CompactString, ToCompactString};
 
 use axum::extract::connect_info::Connected;
+use axum::serve::IncomingStream;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::mem::zeroed;
 use std::net::SocketAddr;
-use tokio::net::unix::SocketAddr as UnixSocketAddr;
-use tokio::net::{TcpStream, UnixStream};
+use tokio::net::{
+    TcpListener, TcpStream, UnixListener, UnixStream, unix::SocketAddr as UnixSocketAddr,
+};
 
 const UNIX_PREFIX: &str = "unix:";
 const UNAMED_UNIX_SOCKET: &str = "unix:<unnamed>";
@@ -43,12 +45,25 @@ impl ClientAddr {
     }
 }
 
+impl Connected<IncomingStream<'_, TcpListener>> for ClientAddr {
+    fn connect_info(target: IncomingStream<'_, TcpListener>) -> Self {
+        Self::Tcp(*target.remote_addr())
+    }
+}
+
 impl Connected<TcpStream> for ClientAddr {
     fn connect_info(target: TcpStream) -> Self {
         target
             .peer_addr()
             .map(Self::Tcp)
             .unwrap_or_else(|_| Self::Tcp(SocketAddr::from(([0, 0, 0, 0], 0))))
+    }
+}
+
+#[cfg(unix)]
+impl Connected<IncomingStream<'_, UnixListener>> for ClientAddr {
+    fn connect_info(target: IncomingStream<'_, UnixListener>) -> Self {
+        Self::Unix(target.remote_addr().clone())
     }
 }
 

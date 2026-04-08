@@ -1,3 +1,4 @@
+use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 use jsonwebtoken as jwt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -18,14 +19,21 @@ pub struct TokenService {
 }
 
 impl TokenService {
-    pub fn new(key: &[u8]) -> Self {
-        Self {
-            encoding_key: jwt::EncodingKey::from_ed_der(key),
-            decoding_key: jwt::DecodingKey::from_ed_der(key),
-        }
+    pub fn new(seed: &[u8]) -> Result<Self, AuthError> {
+        let seed: [u8; 32] = seed.try_into().map_err(|_| AuthError::InvalidKeyLength)?;
+
+        let signing_key = SigningKey::from_bytes(&seed);
+        let pkcs8_der = signing_key
+            .to_pkcs8_der()
+            .map_err(|_| AuthError::KeyEncoding)?;
+
+        Ok(Self {
+            encoding_key: jwt::EncodingKey::from_ed_der(pkcs8_der.as_bytes()),
+            decoding_key: jwt::DecodingKey::from_ed_der(pkcs8_der.as_bytes()),
+        })
     }
 
-    pub fn mint(&self, ip: &str, ttl_secs: u64) -> String {
+    pub fn mint(&self, ip: &str, ttl_secs: u64) -> Result<String, AuthError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -35,7 +43,12 @@ impl TokenService {
             exp: now + ttl_secs as usize,
             iat: now,
         };
-        jwt::encode(&jwt::Header::default(), &claims, &self.encoding_key).unwrap()
+        jwt::encode(
+            &jwt::Header::new(jwt::Algorithm::EdDSA),
+            &claims,
+            &self.encoding_key,
+        )
+        .map_err(|_| AuthError::TokenCreation)
     }
 
     pub fn verify(&self, token: &str) -> Option<Claims> {
@@ -44,4 +57,11 @@ impl TokenService {
             .ok()
             .map(|d| d.claims)
     }
+}
+
+#[derive(Debug)]
+pub enum AuthError {
+    InvalidKeyLength,
+    KeyEncoding,
+    TokenCreation,
 }
