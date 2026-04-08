@@ -11,6 +11,7 @@ use shared::{
     challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
     config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
 };
+use tower_http::trace::TraceLayer;
 
 use axum::{
     Router,
@@ -176,6 +177,8 @@ pub fn build_router(mode: RuntimeMode, forward_config: ForwardedHeadersConfig) -
             let api_routes = Router::new()
                 .route("/pass-challenge", get(handler::pass_challenge))
                 .route("/solver.wasm", axum::routing::get(handler::serve_wasm))
+                .layer(headers::ForwardedHeadersLayer::new(forward_config))
+                .layer(TraceLayer::new_for_http())
                 .with_state(state.clone());
 
             // Proxy routes.
