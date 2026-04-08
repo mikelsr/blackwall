@@ -1,11 +1,13 @@
 use axum::extract::ConnectInfo;
 use axum::http::{HeaderMap, HeaderValue, Request, header};
 use smallvec::SmallVec;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr};
 use std::task::{Context, Poll};
 use tower::{Layer, Service};
 
 use shared::config::proxy::ForwardedHeadersConfig;
+
+use crate::ClientAddr;
 
 pub const X_FORWARDED_FOR: &str = "x-forwarded-for";
 pub const X_REAL_IP: &str = "x-real-ip";
@@ -99,17 +101,19 @@ where
 }
 
 fn apply_forwarded_request_headers<B>(req: &mut Request<B>, config: ForwardedHeadersConfig) {
-    let Some(ip) = req
+    let Some(identity) = req
         .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|info| info.0.ip())
+        .get::<ConnectInfo<ClientAddr>>()
+        .map(|info| info.0.identity())
     else {
         return;
     };
 
-    let source = ip.to_string();
-
-    update_xff(req.headers_mut(), &source, config.xff_strip_private);
+    update_xff(
+        req.headers_mut(),
+        identity.as_str(),
+        config.xff_strip_private,
+    );
 
     if !req.headers().contains_key(X_REAL_IP)
         && let Some(xff) = req.headers().get(X_FORWARDED_FOR)
@@ -121,7 +125,7 @@ fn apply_forwarded_request_headers<B>(req: &mut Request<B>, config: ForwardedHea
     }
 
     if config.use_remote_address
-        && let Ok(value) = HeaderValue::from_str(&source)
+        && let Ok(value) = HeaderValue::from_str(identity.as_str())
     {
         req.headers_mut().insert(X_REAL_IP, value);
     }
@@ -145,22 +149,25 @@ fn update_xff(headers: &mut HeaderMap, remote_ip: &str, strip_private: bool) {
 
     let mut selected = None;
     for seg in combined.rsplit(',').map(str::trim) {
-        let Ok(ip) = seg.parse::<IpAddr>() else {
-            break;
-        };
-        if is_ignored(&ip, strip_private) {
-            continue;
+        match seg.parse::<IpAddr>() {
+            Ok(ip) => {
+                if is_ignored(&ip, strip_private) {
+                    continue;
+                }
+                selected = Some(seg);
+                break;
+            }
+            Err(_) => {
+                // Not an IP, so a Unix socket.
+                continue;
+            }
         }
-        selected = Some(seg);
-        break;
     }
 
     match selected {
         Some(seg) => {
             if let Ok(value) = HeaderValue::from_str(seg) {
                 headers.insert(X_FORWARDED_FOR, value);
-            } else {
-                headers.remove(X_FORWARDED_FOR);
             }
         }
         None => {

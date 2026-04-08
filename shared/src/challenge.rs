@@ -49,7 +49,7 @@ pub enum ConsumeError {
 }
 
 #[async_trait::async_trait]
-pub trait ChallengeRepository {
+pub trait ChallengeRepository: Send + Sync {
     async fn insert(
         &self,
         record: ChallengeRecord,
