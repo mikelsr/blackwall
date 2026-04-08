@@ -228,10 +228,13 @@ pub async fn pass_challenge(
     };
 
     let identity = get_identity(&headers, &addr);
-    let token = state.challenge_service.token_service.mint(
+    let token = match state.challenge_service.token_service.mint(
         &identity,
         state.challenge_service.challenge_config.ttl.as_secs(),
-    );
+    ) {
+        Ok(t) => t,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
 
     let cookie = Cookie::build((COOKIE_NAME, token))
         .path(ROOT)

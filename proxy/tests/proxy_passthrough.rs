@@ -6,12 +6,13 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
+use proxy::client::ClientAddr;
 use shared::config::{
     BasePrefix, ChallengeConfig, PathRewriteConfig, ProxyConfig, Target,
     proxy::ForwardedHeadersConfig,
 };
 use std::sync::Once;
-use std::{net::SocketAddr, time::Duration};
+use std::time::Duration;
 use tokio::net::TcpListener;
 use url::Url;
 
@@ -93,7 +94,7 @@ async fn spawn_server(app: Router) -> String {
     tokio::spawn(async move {
         axum::serve(
             listener,
-            app.into_make_service_with_connect_info::<SocketAddr>(),
+            app.into_make_service_with_connect_info::<ClientAddr>(),
         )
         .await
         .unwrap();

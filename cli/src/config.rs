@@ -8,7 +8,12 @@ use shared::config::{
 };
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
-    let _ = dotenvy::dotenv();
+    let env_config = dotenvy::dotenv();
+    match env_config {
+        Ok(path) => eprintln!("loaded env from {}", path.display()),
+        Err(dotenvy::Error::Io(_)) => {} // No `.env` file.
+        Err(e) => eprintln!("warning: failed to load env file: {e}"),
+    }
     let args = RawArgs::parse();
     StartupMode::parse(args)
 }

@@ -5,13 +5,12 @@ mod metrics;
 mod tls;
 
 use axum::serve;
-use proxy::{RuntimeMode, build_router};
+use proxy::{RuntimeMode, build_router, client::ClientAddr};
 use shared::config::{BindNetwork, proxy as proxy_config};
-use std::net::SocketAddr;
 use std::process::exit;
 use std::sync::Arc;
 use tokio::{select, signal};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 const APP_VERSION: &str = match option_env!("B7L_VERSION") {
     Some(v) => v,
@@ -37,6 +36,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     log::init();
+
+    debug!(target = %cfg.proxy.target, "proxy target");
+    debug!(
+        difficulty = cfg.proxy.challenge.difficulty,
+        ttl = ?cfg.proxy.challenge.ttl,
+        cookie_secure = cfg.proxy.challenge.cookie_secure,
+        "challenge config"
+    );
+    if let Some(ref rewrite) = cfg.proxy.path_rewrite {
+        debug!(
+            base_prefix = ?rewrite.base_prefix,
+            strip = rewrite.strip_base_prefix,
+            "path rewrite"
+        );
+    }
+    debug!(
+        use_remote_address = cfg.proxy.use_remote_address,
+        xff_strip_private = cfg.proxy.xff_strip_private,
+        "forwarded headers"
+    );
 
     // Install the ring crypto provider as the default TLS provider,
     // it seems it needs to be invoked explicitly.
@@ -65,7 +84,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     spawn_metrics_server(&cfg.metrics, health_state.clone());
 
     let listener = bind_tcp_listener(&bind).await?;
-    let svc = app.into_make_service_with_connect_info::<SocketAddr>();
+    let svc = app.into_make_service_with_connect_info::<ClientAddr>();
     health_state.set(health::HealthStatus::Serving);
 
     info!(version = APP_VERSION, bind = %bind, mode = mode_name, "starting blackwall");

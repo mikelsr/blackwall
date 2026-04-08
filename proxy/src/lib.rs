@@ -160,7 +160,8 @@ impl RuntimeMode {
 
 pub fn build_challenge_service(challenge_config: ChallengeConfig) -> ChallengeService {
     ChallengeService {
-        token_service: TokenService::new(&challenge_config.secret),
+        token_service: TokenService::new(&challenge_config.secret)
+            .expect("failed to initialize token service"),
         challenge_repo: Arc::new(MemoryChallengeRepository::new()),
         challenge_config,
     }

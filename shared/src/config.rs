@@ -83,6 +83,16 @@ impl Target {
     }
 }
 
+impl Display for Target {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match self {
+            Target::Disabled => write!(f, "disabled"),
+            Target::Http(url) => write!(f, "{}", url),
+            Target::Https(url) => write!(f, "{}", url),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PathRewriteConfig {
     pub base_prefix: Option<BasePrefix>,
