@@ -167,11 +167,7 @@ struct RawArgs {
     pub(super) xff_strip_private: bool,
 
     /// Challenge difficulty (number of leading 0 hex digits)
-    #[arg(
-        long = "challenge-difficulty",
-        env = "CHALLENGE_DIFFICULTY",
-        default_value_t = 4
-    )]
+    #[arg(long = "difficulty", env = "DIFFICULTY", default_value_t = 4)]
     pub(super) challenge_difficulty: u32,
 
     /// Time-to-live for the challenge session (e.g. 1h, 15m)
