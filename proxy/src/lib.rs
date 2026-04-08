@@ -1,10 +1,12 @@
 mod auth;
+pub mod client;
 mod embed;
 mod handler;
 pub mod headers;
 mod tls;
 mod upgrade;
 
+use client::ClientAddr;
 use shared::{
     challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
     config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
@@ -19,6 +21,8 @@ use axum::{
         header::HOST,
         uri::{Authority, Scheme},
     },
+    middleware::from_fn_with_state,
+    routing::get,
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{client::legacy, rt::TokioExecutor};
@@ -164,10 +168,29 @@ pub fn build_challenge_service(challenge_config: ChallengeConfig) -> ChallengeSe
 
 pub fn build_router(mode: RuntimeMode, forward_config: ForwardedHeadersConfig) -> Router {
     match mode {
-        RuntimeMode::Proxy(state) => Router::new()
-            .fallback(handler_proxy)
-            .with_state(Arc::new(*state))
-            .layer(headers::ForwardedHeadersLayer::new(forward_config)),
+        RuntimeMode::Proxy(state) => {
+            let state = Arc::new(*state);
+
+            // Unprotected endpoints.
+            let api_routes = Router::new()
+                .route("/pass-challenge", get(handler::pass_challenge))
+                .route("/solver.wasm", axum::routing::get(handler::serve_wasm))
+                .with_state(state.clone());
+
+            // Proxy routes.
+            let proxy_routes = Router::new()
+                .fallback(handler_proxy)
+                .layer(from_fn_with_state(
+                    state.clone(),
+                    handler::challenge_middleware,
+                ));
+
+            Router::new()
+                .nest(shared::challenge::API_PREFIX, api_routes)
+                .merge(proxy_routes)
+                .layer(headers::ForwardedHeadersLayer::new(forward_config))
+                .with_state(state)
+        }
         RuntimeMode::AuthOnly => Router::new().fallback(handler_auth_only),
     }
 }
