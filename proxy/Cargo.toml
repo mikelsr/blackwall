@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 shared = { path = "../shared" }
-axum = { version = "0.8.8", features = ["default", "macros"] }
+axum = "0.8.8"
 hyper-util = { version = "0.1.20", features = ["client", "client-legacy", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "0.27.7", features = ["http1", "http2", "tls12", "ring", "logging", "webpki-roots"] }
 url = "2.5.8"

@@ -196,7 +196,6 @@ pub struct PassParameters {
     pub elapsed_time: Option<u64>,
 }
 
-#[axum::debug_handler]
 pub async fn pass_challenge(
     State(state): State<Arc<ProxyState>>,
     ConnectInfo(addr): ConnectInfo<ClientAddr>,
