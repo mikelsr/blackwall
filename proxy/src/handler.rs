@@ -70,23 +70,15 @@ pub async fn challenge_middleware(
         debug!(cookie_preview = %preview, "challenge_middleware: cookie found");
 
         if let Some(claims) = state.challenge_service.token_service.verify(val) {
-            let identity = get_identity(req.headers(), &addr);
             debug!(
-                claims_sub = %claims.sub,
-                identity = %identity,
-                "challenge_middleware: comparing identity"
+                challenge = %claims.challenge,
+                method = %claims.method,
+                "challenge_middleware: valid token, forwarding request"
             );
-            if claims.sub == identity.as_str() {
-                debug!("challenge_middleware: identity matched, forwarding request");
-                return next.run(req).await;
-            }
-            debug!(
-                claims_sub = %claims.sub,
-                identity = %identity,
-                "challenge_middleware: identity MISMATCH"
-            );
+            return next.run(req).await;
         } else {
-            debug!("challenge_middleware: token verification FAILED");
+            // TODO mikel: tower spans?
+            debug!("challenge_middleware: token verification failed");
         }
     } else {
         debug!("challenge_middleware: no cookie found");
@@ -250,9 +242,9 @@ pub async fn pass_challenge(
         ROOT
     };
 
-    let identity = get_identity(&headers, &addr);
     let token = match state.challenge_service.token_service.mint(
-        &identity,
+        &params.id.to_string(),
+        POW_METHOD,
         state.challenge_service.challenge_config.ttl.as_secs(),
     ) {
         Ok(t) => t,
@@ -261,10 +253,10 @@ pub async fn pass_challenge(
 
     let token_preview = &token[..token.len().min(30)];
     debug!(
-        identity = %identity,
+        challenge_id = %params.id,
         token_preview = %token_preview,
         redir = %final_redir,
-        "pass_challenge: minted token, setting cookie and redirecting"
+        "pass_challenge: minted token, setting cookie, and redirecting"
     );
 
     let cookie = Cookie::build((COOKIE_NAME, token))
@@ -273,7 +265,13 @@ pub async fn pass_challenge(
         .same_site(SameSite::Lax)
         .build();
 
-    (jar.add(cookie), Redirect::to(final_redir)).into_response()
+    let response = Response::builder()
+        .status(StatusCode::FOUND)
+        .header("Location", final_redir)
+        .body(Body::empty())
+        .unwrap();
+
+    (jar.add(cookie), response).into_response()
 }
 
 // TODO mikel: inline? Just for fun, check if the compiler inlines it automatically.

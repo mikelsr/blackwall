@@ -3,11 +3,16 @@ use jsonwebtoken as jwt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+const NBF_SECS: usize = 60;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub sub: String,
+    pub challenge: String,
+    pub method: String,
     pub exp: usize,
     pub iat: usize,
+    pub nbf: usize,
+    // TODO mikel: add policyRule, action...
 }
 
 // TODO mikel:
@@ -35,15 +40,22 @@ impl TokenService {
         })
     }
 
-    pub fn mint(&self, ip: &str, ttl_secs: u64) -> Result<String, AuthError> {
+    pub fn mint(
+        &self,
+        challenge_id: &str,
+        method: &str,
+        ttl_secs: u64,
+    ) -> Result<String, AuthError> {
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs() as usize;
         let claims = Claims {
-            sub: ip.to_string(),
+            challenge: challenge_id.to_string(),
+            method: method.to_string(),
             exp: now + ttl_secs as usize,
             iat: now,
+            nbf: now - NBF_SECS,
         };
         jwt::encode(
             &jwt::Header::new(jwt::Algorithm::EdDSA),
