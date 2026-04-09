@@ -1,17 +1,21 @@
+use compact_str::CompactString;
 use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 use jsonwebtoken as jwt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 const NBF_SECS: usize = 60;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
-    pub challenge: String,
-    pub method: String,
+    pub challenge: Uuid,
+    pub method: CompactString,
     pub exp: usize,
     pub iat: usize,
     pub nbf: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub restriction: Option<String>,
     // TODO mikel: add policyRule, action...
 }
 
@@ -42,8 +46,9 @@ impl TokenService {
 
     pub fn mint(
         &self,
-        challenge_id: &str,
+        challenge_id: Uuid,
         method: &str,
+        restriction: Option<String>,
         ttl_secs: u64,
     ) -> Result<String, AuthError> {
         let now = SystemTime::now()
@@ -51,11 +56,12 @@ impl TokenService {
             .unwrap()
             .as_secs() as usize;
         let claims = Claims {
-            challenge: challenge_id.to_string(),
-            method: method.to_string(),
+            challenge: challenge_id,
+            method: CompactString::new(method),
             exp: now + ttl_secs as usize,
             iat: now,
             nbf: now - NBF_SECS,
+            restriction: restriction.map(String::from),
         };
         jwt::encode(
             &jwt::Header::new(jwt::Algorithm::EdDSA),

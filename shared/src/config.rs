@@ -136,6 +136,7 @@ pub struct ChallengeConfig {
     pub ttl: Duration,
     pub secret: Bytes,
     pub cookie_secure: bool,
+    pub jwt_restriction_header: Option<String>,
 }
 
 impl ChallengeConfig {
@@ -144,6 +145,7 @@ impl ChallengeConfig {
         ttl: Duration,
         secret: Option<String>,
         cookie_secure: bool,
+        jwt_restriction_header: Option<String>,
     ) -> Result<Self, ConfigError> {
         let validated_secret = Self::validate_or_generate_secret(secret)?;
         Ok(Self {
@@ -151,6 +153,7 @@ impl ChallengeConfig {
             ttl,
             secret: validated_secret,
             cookie_secure,
+            jwt_restriction_header,
         })
     }
 

@@ -4,7 +4,6 @@ use crate::embed::{
 use crate::{ClientAddr, ProxyState};
 use axum::extract::ConnectInfo;
 use axum::http::header::USER_AGENT;
-use axum::response::Redirect;
 use axum::{
     body::Body,
     extract::{Query, State},
@@ -37,6 +36,7 @@ const POW_METHOD: &str = "sha256";
 const HEADER_IP: &str = "ip";
 const HEADER_USER_AGENT: &str = "ua";
 const HEADER_URI: &str = "uri";
+use sha2::{Digest, Sha256};
 
 type WASMHEADERS = ([(&'static str, &'static str); 2], &'static [u8]);
 const WASM_RESPONSE: WASMHEADERS = (
@@ -213,7 +213,7 @@ pub struct PassParameters {
 
 pub async fn pass_challenge(
     State(state): State<Arc<ProxyState>>,
-    ConnectInfo(addr): ConnectInfo<ClientAddr>,
+    ConnectInfo(_): ConnectInfo<ClientAddr>,
     Query(params): Query<PassParameters>,
     headers: HeaderMap,
     jar: CookieJar,
@@ -242,9 +242,28 @@ pub async fn pass_challenge(
         ROOT
     };
 
+    let restriction = state
+        .challenge_service
+        .challenge_config
+        .jwt_restriction_header
+        .as_deref()
+        .and_then(|header_name| headers.get(header_name).and_then(|v| v.to_str().ok()))
+        .map(|value| sha256_to_hex(value));
+    if state
+        .challenge_service
+        .challenge_config
+        .jwt_restriction_header
+        .is_some()
+        && restriction.is_none()
+    {
+        debug!("pass_challenge: restriction header configured but missing from request");
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
+
     let token = match state.challenge_service.token_service.mint(
-        &params.id.to_string(),
+        params.id,
         POW_METHOD,
+        restriction,
         state.challenge_service.challenge_config.ttl.as_secs(),
     ) {
         Ok(t) => t,
@@ -288,4 +307,9 @@ fn redirect_is_safe(redir: &str, current_host: &str) -> bool {
     }
 
     false
+}
+
+fn sha256_to_hex(input: &str) -> String {
+    let hash = Sha256::digest(input.as_bytes());
+    hex::encode(hash)
 }

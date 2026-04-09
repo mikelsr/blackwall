@@ -55,6 +55,7 @@ impl RawArgs {
             self.challenge_ttl,
             self.challenge_secret,
             self.cookie_secure,
+            self.jwt_restriction_header,
         )?;
 
         Ok(Config {
@@ -191,4 +192,13 @@ struct RawArgs {
     /// Print Blackwall version
     #[arg(long = "version", env = "VERSION", default_value_t = false)]
     pub(super) version: bool,
+
+    /// If set, the JWT is only valid if the current value of this header matches the value when the JWT was created.
+    /// You can use it e.g. to restrict a JWT to the source IP of the user using `X-Real-IP`
+    #[arg(
+        long = "jwt-restriction-header",
+        env = "JWT_RESTRICTION_HEADER",
+        default_value = "X-Real-IP"
+    )]
+    pub(super) jwt_restriction_header: Option<String>,
 }
