@@ -2,16 +2,25 @@
 /// The rest of the challenge code is at /shared/src/challenge.rs.
 use sha2::{Digest, Sha256};
 
-/// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
-pub fn compute_hash(random_data: &[u8], nonce: u64) -> [u8; 32] {
-    let mut hasher = <Sha256 as Digest>::new();
-    hasher.update(random_data);
+/// Proof-of-work hash algorithm.
+trait PowHashAlgorithm {
+    fn digest(random_data: &[u8], nonce: u64) -> [u8; 32];
+}
 
-    let mut buffer = itoa::Buffer::new();
-    let nonce_str = buffer.format(nonce);
-    hasher.update(nonce_str.as_bytes());
+struct Sha256Pow;
 
-    hasher.finalize().into()
+impl PowHashAlgorithm for Sha256Pow {
+    /// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
+    fn digest(random_data: &[u8], nonce: u64) -> [u8; 32] {
+        let mut hasher = <Sha256 as Digest>::new();
+        hasher.update(random_data);
+
+        let mut buffer = itoa::Buffer::new();
+        let nonce_str = buffer.format(nonce);
+        hasher.update(nonce_str.as_bytes());
+
+        hasher.finalize().into()
+    }
 }
 
 /// Checks if a hash has the required number of leading zero hex digits (nibbles).
@@ -40,14 +49,17 @@ pub fn solve(random_data: &[u8], difficulty: u32, start_nonce: u64, step: u64) -
     assert!(step > 0, "step must be > 0");
 
     let mut nonce = start_nonce;
-    let mut hash = compute_hash(random_data, nonce);
-    while !check_difficulty(&hash, difficulty) {
+
+    loop {
+        let digest = Sha256Pow::digest(random_data, nonce);
+        if check_difficulty(&digest, difficulty) {
+            return (nonce, digest);
+        }
+
         nonce = nonce
             .checked_add(step)
             .expect("nonce overflow while searching for solution");
-        hash = compute_hash(random_data, nonce);
     }
-    (nonce, hash)
 }
 
 // I've added a bunch of tests, I must confess with the help of an LLM.
