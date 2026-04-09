@@ -11,7 +11,6 @@ use tokio::net::{
 
 const UNIX_PREFIX: &str = "unix:";
 const UNAMED_UNIX_SOCKET: &str = "unix:<unnamed>";
-const CLIENT_STR_CAPACITY: usize = 40; // Should fit IPv4 and IPv6 addresses, may fit Unix paths.
 
 /// Represents a client address, either TCP or Unix socket.
 #[derive(Clone)]
@@ -32,14 +31,13 @@ impl ClientAddr {
             Self::Tcp(addr) => addr.ip().to_compact_string(),
             #[cfg(unix)]
             Self::Unix(addr) => {
-                let mut s = CompactString::with_capacity(CLIENT_STR_CAPACITY);
                 if let Some(path) = addr.as_pathname() {
-                    s.push_str(UNIX_PREFIX);
+                    let mut s = CompactString::new(UNIX_PREFIX);
                     s.push_str(&path.to_string_lossy());
+                    s
                 } else {
-                    s.push_str(UNAMED_UNIX_SOCKET);
+                    CompactString::new(UNAMED_UNIX_SOCKET)
                 }
-                s
             }
         }
     }
