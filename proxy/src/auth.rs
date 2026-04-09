@@ -1,4 +1,4 @@
-use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey, pkcs8::spki::EncodePublicKey};
+use ed25519_dalek::{SigningKey, pkcs8::EncodePrivateKey};
 use jsonwebtoken as jwt;
 use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -28,13 +28,10 @@ impl TokenService {
             .map_err(|_| AuthError::KeyEncoding)?;
 
         let verifying_key = signing_key.verifying_key();
-        let public_key_der = verifying_key
-            .to_public_key_der()
-            .map_err(|_| AuthError::KeyEncoding)?;
 
         Ok(Self {
             encoding_key: jwt::EncodingKey::from_ed_der(pkcs8_der.as_bytes()),
-            decoding_key: jwt::DecodingKey::from_ed_der(public_key_der.as_ref()),
+            decoding_key: jwt::DecodingKey::from_ed_der(verifying_key.as_bytes()),
         })
     }
 
