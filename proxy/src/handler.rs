@@ -26,6 +26,7 @@ use shared::{
 };
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use tracing::debug;
 use url::Url;
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -60,20 +61,42 @@ pub async fn challenge_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
+    let request_uri = req.uri().to_string();
+    debug!(uri = %request_uri, "challenge_middleware: processing request");
+
     if let Some(cookie) = cookie_jar.get(COOKIE_NAME) {
-        if let Some(claims) = state.challenge_service.token_service.verify(cookie.value()) {
+        let val = cookie.value();
+        let preview = &val[..val.len().min(30)];
+        debug!(cookie_preview = %preview, "challenge_middleware: cookie found");
+
+        if let Some(claims) = state.challenge_service.token_service.verify(val) {
             let identity = get_identity(req.headers(), &addr);
+            debug!(
+                claims_sub = %claims.sub,
+                identity = %identity,
+                "challenge_middleware: comparing identity"
+            );
             if claims.sub == identity.as_str() {
+                debug!("challenge_middleware: identity matched, forwarding request");
                 return next.run(req).await;
             }
+            debug!(
+                claims_sub = %claims.sub,
+                identity = %identity,
+                "challenge_middleware: identity MISMATCH"
+            );
+        } else {
+            debug!("challenge_middleware: token verification FAILED");
         }
+    } else {
+        debug!("challenge_middleware: no cookie found");
     }
 
     let identity = get_identity(req.headers(), &addr);
     let ctx = ChallengeInfo {
         identity,
         headers: req.headers(),
-        uri: req.uri().path(), // .path() returns a &str (no allocation!)
+        uri: req.uri().path(),
     };
 
     serve_challenge_page(State(state), ctx).await
@@ -235,6 +258,14 @@ pub async fn pass_challenge(
         Ok(t) => t,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+
+    let token_preview = &token[..token.len().min(30)];
+    debug!(
+        identity = %identity,
+        token_preview = %token_preview,
+        redir = %final_redir,
+        "pass_challenge: minted token, setting cookie and redirecting"
+    );
 
     let cookie = Cookie::build((COOKIE_NAME, token))
         .path(ROOT)
