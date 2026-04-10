@@ -3,11 +3,11 @@
 use sha2::{Digest, Sha256};
 
 /// Proof-of-work hash algorithm.
-trait PowHashAlgorithm {
+pub trait PowHashAlgorithm {
     fn digest(random_data: &[u8], nonce: u64) -> [u8; 32];
 }
 
-struct Sha256Pow;
+pub struct Sha256Pow;
 
 impl PowHashAlgorithm for Sha256Pow {
     /// Computes SHA-256 of (random_data + nonce) and returns the raw 32-byte hash.
@@ -159,16 +159,16 @@ mod tests {
     #[test]
     fn compute_hash_known_value() {
         // Hash output must always be exactly 32 bytes.
-        let hash = compute_hash(b"test", 0);
+        let hash = Sha256Pow::digest(b"test", 0);
         assert_eq!(hash.len(), 32);
     }
 
     #[test]
     fn compute_hash_different_nonces_produce_different_hashes() {
         // Different nonces for same data should produce different digests.
-        let hash1 = compute_hash(b"randomdata", 0);
-        let hash2 = compute_hash(b"randomdata", 1);
-        let hash3 = compute_hash(b"randomdata", 2);
+        let hash1 = Sha256Pow::digest(b"randomdata", 0);
+        let hash2 = Sha256Pow::digest(b"randomdata", 1);
+        let hash3 = Sha256Pow::digest(b"randomdata", 2);
 
         assert_ne!(hash1, hash2);
         assert_ne!(hash2, hash3);
@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn compute_hash_same_input_produces_same_hash() {
         // Hashing is deterministic for identical input bytes and nonce.
-        let hash1 = compute_hash(b"samedata", 42);
-        let hash2 = compute_hash(b"samedata", 42);
+        let hash1 = Sha256Pow::digest(b"samedata", 42);
+        let hash2 = Sha256Pow::digest(b"samedata", 42);
 
         assert_eq!(hash1, hash2);
     }
@@ -187,8 +187,8 @@ mod tests {
     #[test]
     fn compute_hash_different_data_produces_different_hashes() {
         // Different input data with same nonce should change the digest.
-        let hash1 = compute_hash(b"data1", 0);
-        let hash2 = compute_hash(b"data2", 0);
+        let hash1 = Sha256Pow::digest(b"data1", 0);
+        let hash2 = Sha256Pow::digest(b"data2", 0);
 
         assert_ne!(hash1, hash2);
     }
@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn compute_hash_matches_expected_sha256() {
         // Verify a fixed test vector for exact SHA-256 correctness.
-        let hash = compute_hash(b"hello", 123);
+        let hash = Sha256Pow::digest(b"hello", 123);
         let expected: [u8; 32] = [
             0x27, 0xcc, 0x69, 0x94, 0xfc, 0x1c, 0x01, 0xce, 0x66, 0x59, 0xc6, 0xbd, 0xdc, 0xa9,
             0xb6, 0x9c, 0x4c, 0x6a, 0x94, 0x18, 0x06, 0x5e, 0x61, 0x2c, 0x69, 0xd1, 0x10, 0xb3,
@@ -208,15 +208,15 @@ mod tests {
     #[test]
     fn compute_hash_large_nonce() {
         // Largest u64 nonce must hash without panicking or truncation.
-        let hash = compute_hash(b"data", u64::MAX);
+        let hash = Sha256Pow::digest(b"data", u64::MAX);
         assert_eq!(hash.len(), 32);
     }
 
     #[test]
     fn compute_hash_raw_bytes_differs_from_hex_text() {
         // Raw bytes and their hex text representation must hash differently.
-        let hash_raw_bytes = compute_hash(&[0xde, 0xad, 0xbe, 0xef], 0);
-        let hash_hex_text = compute_hash(b"deadbeef", 0);
+        let hash_raw_bytes = Sha256Pow::digest(&[0xde, 0xad, 0xbe, 0xef], 0);
+        let hash_hex_text = Sha256Pow::digest(b"deadbeef", 0);
         assert_ne!(hash_raw_bytes, hash_hex_text);
     }
 
@@ -228,7 +228,7 @@ mod tests {
         let (nonce, hash) = solve(random_data, difficulty, 0, 1);
 
         assert!(check_difficulty(&hash, difficulty));
-        assert_eq!(hash, compute_hash(random_data, nonce));
+        assert_eq!(hash, Sha256Pow::digest(random_data, nonce));
     }
 
     #[test]
@@ -239,7 +239,7 @@ mod tests {
         let (nonce, hash) = solve(random_data, difficulty, 0, 1);
 
         assert!(check_difficulty(&hash, difficulty));
-        assert_eq!(hash, compute_hash(random_data, nonce));
+        assert_eq!(hash, Sha256Pow::digest(random_data, nonce));
     }
 
     #[test]

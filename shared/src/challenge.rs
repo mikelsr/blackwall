@@ -1,4 +1,5 @@
 use crate::store::StoreError;
+use challenge::PowHashAlgorithm;
 use std::{collections::BTreeMap, time::SystemTime};
 use uuid::Uuid;
 
@@ -67,7 +68,7 @@ pub async fn verify_solution(
         .await
         .map_err(VerificationError::Consume)?;
 
-    let hash = challenge::compute_hash(&record.random_data, solution.nonce);
+    let hash = challenge::Sha256Pow::digest(&record.random_data, solution.nonce);
 
     if !challenge::check_difficulty(&hash, record.difficulty) {
         return Err(VerificationError::InvalidSolution);
