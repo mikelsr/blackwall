@@ -64,7 +64,7 @@ fn proxy_config() -> ProxyConfig {
         use_remote_address: false,
         xff_strip_private: true,
         path_rewrite: None,
-        challenge: ChallengeConfig::parse(10, Duration::from_secs(30), None, false).unwrap(),
+        challenge: ChallengeConfig::parse(10, Duration::from_secs(30), None, false, None).unwrap(),
     }
 }
 
