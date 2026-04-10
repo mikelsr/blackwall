@@ -1,5 +1,6 @@
 use crate::embed::{
-    ASSET_SOLVER_WASM, CHALLENGE_DECLARATION, HTML_PREFIX, HTML_SUFFIX, WIGGLE_ROOM,
+    ASSET_SOLVER_WASM, ASSET_SOLVER_WASM_BROTLI, ASSET_SOLVER_WASM_GZIP, ASSET_SOLVER_WASM_ZSTD,
+    CHALLENGE_DECLARATION, HTML_PREFIX, HTML_SUFFIX, WIGGLE_ROOM,
 };
 use crate::{ClientAddr, ProxyState};
 use axum::extract::ConnectInfo;
@@ -15,6 +16,8 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use bytes::Bytes;
 use compact_str::CompactString;
+use flate2::Compression;
+use flate2::write::GzEncoder;
 use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
 use serde_json;
@@ -24,8 +27,9 @@ use shared::{
     store::StoreError,
 };
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::sync::Arc;
-use tracing::debug;
+use tracing::{debug, warn};
 use url::Url;
 use uuid::{NoContext, Timestamp, Uuid};
 
@@ -33,19 +37,22 @@ const HTTP: &str = "http";
 const HTTPS: &str = "https";
 const ROOT: &str = "/";
 const POW_METHOD: &str = "sha256";
-const HEADER_IP: &str = "ip";
-const HEADER_USER_AGENT: &str = "ua";
-const HEADER_URI: &str = "uri";
-use sha2::{Digest, Sha256};
 
-type WASMHEADERS = ([(&'static str, &'static str); 2], &'static [u8]);
-const WASM_RESPONSE: WASMHEADERS = (
-    [
-        ("Content-Type", "application/wasm"),
-        ("Cache-Control", "public, max-age=31536000, immutable"),
-    ],
-    ASSET_SOLVER_WASM,
-);
+const BROTLI: &str = "br";
+const GZIP: &str = "gzip";
+const ZSTD: &str = "zstd";
+
+// TODO mikel these may be declared on axum already(?)
+
+const HEADER_CACHE_CONTROL: &str = "Cache-Control";
+const HEADER_CONTENT_ENCODING: &str = "Content-Encoding";
+const HEADER_CONTENT_TYPE: &str = "Content-Type";
+const HEADER_IP: &str = "ip";
+const HEADER_URI: &str = "uri";
+const HEADER_USER_AGENT: &str = "ua";
+const HEADER_VARY: &str = "Vary";
+
+use sha2::{Digest, Sha256};
 
 struct ChallengeInfo<'a> {
     pub identity: CompactString,
@@ -85,13 +92,13 @@ pub async fn challenge_middleware(
     }
 
     let identity = get_identity(req.headers(), &addr);
-    let ctx = ChallengeInfo {
+    let challenge_info = ChallengeInfo {
         identity,
         headers: req.headers(),
         uri: req.uri().path(),
     };
 
-    serve_challenge_page(State(state), ctx).await
+    serve_challenge_page(State(state), &challenge_info).await
 }
 
 /// Extracts the user's identity from the request headers rather than the physical client address;
@@ -106,15 +113,21 @@ fn get_identity(headers: &HeaderMap, addr: &ClientAddr) -> CompactString {
 
 async fn serve_challenge_page(
     State(state): State<Arc<ProxyState>>,
-    challenge_info: ChallengeInfo<'_>,
+    challenge_info: &ChallengeInfo<'_>,
 ) -> Response {
     let new_challenge = match create_and_store_challenge(&state, challenge_info).await {
         Ok(c) => c,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            warn!(error = %e, "serve_challenge_page: failed to create or store challenge");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
     let encoded_challenge = match serde_json::to_string(&new_challenge) {
         Ok(json) => json,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(e) => {
+            warn!(error = %e, "serve_challenge_page: failed to encode challenge to JSON");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
 
     let mut body = String::with_capacity(
@@ -130,21 +143,53 @@ async fn serve_challenge_page(
     body.push(';');
     body.push_str(HTML_SUFFIX);
 
-    // TODO mikel: extract headers.
-    let response = match Response::builder()
-        .header("Content-Type", "text/html")
-        .header("Cache-Control", "no-store")
+    let accept_encoding = challenge_info
+        .headers
+        .get(axum::http::header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    // Try compression, fallthrough to the uncompressed version if something goes wrong.
+    if accept_encoding.contains("gzip") {
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
+
+        if let Err(e) = encoder.write_all(body.as_bytes()) {
+            warn!(error = %e, "serve_challenge_page: failed to write to gzip encoder");
+        } else {
+            match encoder.finish() {
+                Ok(compressed_data) => {
+                    match Response::builder()
+                        .header(axum::http::header::CONTENT_TYPE, "text/html")
+                        .header(axum::http::header::CACHE_CONTROL, "no-store")
+                        .header(axum::http::header::VARY, "Accept-Encoding")
+                        .header(axum::http::header::CONTENT_ENCODING, "gzip")
+                        .body(Body::from(compressed_data))
+                    {
+                        Ok(response) => return response,
+                        Err(e) => {
+                            warn!(error = %e, "serve_challenge_page: failed to build gzip response")
+                        }
+                    }
+                }
+                Err(e) => warn!(error = %e, "serve_challenge_page: failed to finish gzip encoder"),
+            }
+        }
+    }
+
+    Response::builder()
+        .header(axum::http::header::CONTENT_TYPE, "text/html")
+        .header(axum::http::header::CACHE_CONTROL, "no-store")
+        .header(axum::http::header::VARY, "Accept-Encoding")
         .body(Body::from(body))
-    {
-        Ok(response) => response,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    response
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "serve_challenge_page: failed to build final response");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
 }
 
 async fn create_and_store_challenge(
     state: &ProxyState,
-    challenge_info: ChallengeInfo<'_>,
+    challenge_info: &ChallengeInfo<'_>,
 ) -> Result<Challenge, StoreError> {
     let now = Timestamp::now(NoContext);
     let id = Uuid::new_v7(now);
@@ -180,10 +225,10 @@ async fn create_and_store_challenge(
     Ok(challenge)
 }
 
-fn create_metadata(challenge_info: ChallengeInfo<'_>) -> BTreeMap<CompactString, CompactString> {
+fn create_metadata(challenge_info: &ChallengeInfo<'_>) -> BTreeMap<CompactString, CompactString> {
     let mut metadata: BTreeMap<CompactString, CompactString> = BTreeMap::new();
 
-    metadata.insert(HEADER_IP.into(), challenge_info.identity);
+    metadata.insert(HEADER_IP.into(), challenge_info.identity.clone());
     if let Some(ua) = challenge_info
         .headers
         .get(USER_AGENT)
@@ -197,8 +242,47 @@ fn create_metadata(challenge_info: ChallengeInfo<'_>) -> BTreeMap<CompactString,
     metadata
 }
 
-pub async fn serve_wasm() -> Response {
-    WASM_RESPONSE.into_response()
+pub async fn serve_wasm(headers: HeaderMap) -> Response {
+    let accept_encoding = headers
+        .get(axum::http::header::ACCEPT_ENCODING)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+
+    let compressed_choice = if accept_encoding.contains(BROTLI) {
+        Some((ASSET_SOLVER_WASM_BROTLI, BROTLI))
+    } else if accept_encoding.contains(ZSTD) {
+        Some((ASSET_SOLVER_WASM_ZSTD, ZSTD))
+    } else if accept_encoding.contains(GZIP) {
+        Some((ASSET_SOLVER_WASM_GZIP, GZIP))
+    } else {
+        None
+    };
+
+    // Try compression, fallthrough to the uncompressed version if something goes wrong.
+    if let Some((data, encoding)) = compressed_choice {
+        match Response::builder()
+            .header(HEADER_CONTENT_TYPE, "application/wasm")
+            .header(HEADER_CACHE_CONTROL, "public, max-age=31536000, immutable")
+            .header(HEADER_VARY, "Accept-Encoding")
+            .header(HEADER_CONTENT_ENCODING, encoding)
+            .body(Body::from(data))
+        {
+            Ok(response) => return response,
+            Err(e) => {
+                warn!(error = %e, encoding = %encoding, "serve_wasm: failed to build compressed response")
+            }
+        }
+    }
+
+    Response::builder()
+        .header("Content-Type", "application/wasm")
+        .header("Cache-Control", "public, max-age=31536000, immutable")
+        .header("Vary", "Accept-Encoding")
+        .body(Body::from(ASSET_SOLVER_WASM))
+        .unwrap_or_else(|e| {
+            warn!(error = %e, "serve_wasm: failed to build final response");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        })
 }
 
 #[derive(Serialize, Deserialize)]

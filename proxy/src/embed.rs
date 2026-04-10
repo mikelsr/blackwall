@@ -6,6 +6,12 @@ use const_str::split;
 pub(crate) const ASSET_CHALLENGE_HTML: &str = include_str!("../../www/index.html");
 pub(crate) const ASSET_SOLVER_WASM: &[u8] =
     include_bytes!("../../challenge-wasm/pkg/challenge_wasm_bg.wasm");
+pub(crate) const ASSET_SOLVER_WASM_GZIP: &[u8] =
+    include_bytes!("../../challenge-wasm/pkg/challenge_wasm_bg.wasm.gz");
+pub(crate) const ASSET_SOLVER_WASM_BROTLI: &[u8] =
+    include_bytes!("../../challenge-wasm/pkg/challenge_wasm_bg.wasm.br");
+pub(crate) const ASSET_SOLVER_WASM_ZSTD: &[u8] =
+    include_bytes!("../../challenge-wasm/pkg/challenge_wasm_bg.wasm.zst");
 
 pub(crate) const SEPARATOR: &str = "<!--B7L_INJECTION-->";
 pub(crate) const CHALLENGE_DECLARATION: &str = "window.ANUBIS_CHALLENGE = ";
