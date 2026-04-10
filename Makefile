@@ -2,7 +2,7 @@ VERSION := $(shell cat ./VERSION)
 CARGO ?= cargo
 WWW_PORT ?= 3000
 
-.PHONY: build prebaked-build www www-proxy
+.PHONY: build build-wasm prebaked-build www www-proxy
 
 build: build-wasm
 	$(CARGO) build -p cli --bin blackwall
