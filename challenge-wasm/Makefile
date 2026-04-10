@@ -7,7 +7,7 @@ CARGO_TARGET_DIR ?= target
 MAKEFILE_DIR := $(dir $(abspath $(lastword $(MAKEFILE_LIST))))
 WASM_FILE := $(OUT_DIR)/challenge_wasm_bg.wasm
 
-.PHONY: install test build compact stats twiggy
+.PHONY: install test build build-wasm compress-wasm stats twiggy
 
 install:
 	rustup target add wasm32-unknown-unknown
@@ -19,7 +19,9 @@ test: build
 	@ echo "Access the web page at http://localhost:9999/www/index.html"
 	@ python3 -m http.server 9999 --directory $(MAKEFILE_DIR)
 
-build:
+build: build-wasm compress-wasm
+
+build-wasm:
 	CARGO_TARGET_DIR=$(CARGO_TARGET_DIR) \
 	CARGO_PROFILE_RELEASE_OPT_LEVEL=3 \
 	CARGO_PROFILE_RELEASE_LTO=thin \
@@ -28,17 +30,16 @@ build:
 	CARGO_PROFILE_RELEASE_STRIP=symbols \
 	$(WASM_PACK) build --target $(TARGET) --release --no-opt --out-dir $(OUT_DIR)
 
-
-# Builds a compacted version of the WASM file.
-# It isn't too noticeable, but it doesn't degrade server performance
-# and it reduces bandwidth usage.
-compact: build
-	@if ! command -v $(WASM_OPT) >/dev/null 2>&1; then \
+compress-wasm:
+	@if command -v $(WASM_OPT) >/dev/null 2>&1; then \
+	    $(WASM_OPT) -Oz --enable-bulk-memory --strip-debug --strip-producers $(WASM_FILE) -o $(WASM_FILE); \
+	else \
 		echo "wasm-opt not found on PATH"; \
 		echo "set WASM_OPT=/absolute/path/to/wasm-opt or install binaryen"; \
-		exit 1; \
 	fi
-	$(WASM_OPT) -Oz --enable-bulk-memory --strip-debug --strip-producers $(WASM_FILE) -o $(WASM_FILE)
+	gzip -9 -f -k $(WASM_FILE)
+	brotli -f -k -q 11 $(WASM_FILE)
+	zstd -f -k --ultra -22 $(WASM_FILE)
 
 stats:
 	@if [ ! -f "$(WASM_FILE)" ]; then echo "missing $(WASM_FILE) (run: make build)"; exit 1; fi

@@ -4,8 +4,11 @@ WWW_PORT ?= 3000
 
 .PHONY: build prebaked-build www www-proxy
 
-build:
+build: build-wasm
 	$(CARGO) build -p cli --bin blackwall
+
+build-wasm:
+	make -C ./challenge-wasm build
 
 prebaked-build:
 	B7L_VERSION="$(VERSION)" $(CARGO) build -p cli --bin blackwall --release
