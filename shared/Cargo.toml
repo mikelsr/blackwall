@@ -17,6 +17,9 @@ tokio = { version = "1.43.0", features = ["macros", "rt", "sync", "time"] }
 base64 = "0.22.1"
 rand = "0.10.0"
 tracing.workspace = true
+ipnet = { version = "2.12.0", features = ["serde"] }
+regex = "1.12.4"
+http = "1.4.2"
 
 [dev-dependencies]
 tokio = { version = "1.43.0", features = ["full", "sync", "test-util"] }
