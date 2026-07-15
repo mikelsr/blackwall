@@ -6,6 +6,7 @@ use shared::config::{
     BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
     PathRewriteConfig, ProxyConfig, Target,
 };
+use shared::policy::PolicyEngine;
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let env_config = dotenvy::dotenv();
@@ -18,9 +19,12 @@ pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     StartupMode::parse(args)
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug)]
 pub(crate) enum StartupMode {
-    Run(Box<Config>),
+    Run {
+        config: Box<Config>,
+        policy_engine: PolicyEngine,
+    },
     Version,
     Healthcheck(HealthcheckConfig),
 }
@@ -32,11 +36,17 @@ impl StartupMode {
         }
         if args.health {
             return Ok(StartupMode::Healthcheck(HealthcheckConfig {
-                metrics_bind: args.metrics_bind,
+                metrics_bind: args.metrics_bind.clone(),
             }));
         }
 
-        Ok(StartupMode::Run(Box::new(args.into_config()?)))
+        let config = args.into_config()?;
+        let policy_engine = PolicyEngine::default_policy(config.proxy.challenge.difficulty);
+
+        Ok(StartupMode::Run {
+            config: Box::new(config),
+            policy_engine,
+        })
     }
 }
 
@@ -183,6 +193,10 @@ struct RawArgs {
     /// If true, the session cookie will only be sent over HTTPS
     #[arg(long = "cookie-secure", env = "COOKIE_SECURE", default_value_t = false)]
     pub(super) cookie_secure: bool,
+
+    /// Path to policy YAML file. If empty, all requests are challenged at the default difficulty.
+    #[arg(long = "policy-fname", env = "POLICY_FNAME", default_value = "")]
+    pub(super) policy_fname: String,
 
     // Startup modes
     /// Run a health check against Blackwall

@@ -11,6 +11,8 @@ use shared::config::{
     BasePrefix, ChallengeConfig, PathRewriteConfig, ProxyConfig, Target,
     proxy::ForwardedHeadersConfig,
 };
+use shared::policy::PolicyEngine;
+
 use std::sync::Once;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -41,8 +43,10 @@ impl TestHarness {
             ..proxy_config
         };
 
+        let policy_engine = PolicyEngine::default(config.challenge.difficulty);
+
         let app = proxy::build_router(
-            proxy::RuntimeMode::from_config(config).unwrap(),
+            proxy::RuntimeMode::new(config, policy_engine).unwrap(),
             forwarded_config,
         );
         let proxy_base = spawn_server(app).await;

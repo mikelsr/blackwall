@@ -5,6 +5,7 @@ use axum::serve::IncomingStream;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::mem::zeroed;
 use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr};
 use tokio::net::{
     TcpListener, TcpStream, UnixListener, UnixStream, unix::SocketAddr as UnixSocketAddr,
 };
@@ -39,6 +40,14 @@ impl ClientAddr {
                     CompactString::new(UNAMED_UNIX_SOCKET)
                 }
             }
+        }
+    }
+
+    pub fn ip(&self) -> IpAddr {
+        match self {
+            Self::Tcp(addr) => addr.ip(),
+            #[cfg(unix)]
+            Self::Unix(_) => IpAddr::V4(Ipv4Addr::LOCALHOST),
         }
     }
 }

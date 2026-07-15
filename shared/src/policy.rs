@@ -89,6 +89,7 @@ pub struct Rule {
 // Policy compilation.
 
 /// Rules kept at runtime and used for actual evaluation.
+#[derive(Debug)]
 pub struct CompiledRule {
     pub name: CompactString,
     pub action: Action,
@@ -243,7 +244,7 @@ fn compile_regex(
 }
 
 // Weight thresholds.
-
+#[derive(Debug)]
 pub struct CompiledThreshold {
     pub name: CompactString,
     pub predicate: WeightPredicate,
@@ -305,7 +306,7 @@ fn parse_i32(s: &str) -> Result<i32, String> {
 }
 
 // Policy engine.
-
+#[derive(Debug)]
 pub struct PolicyEngine {
     rules: Vec<CompiledRule>,
     thresholds: Vec<CompiledThreshold>,
@@ -323,7 +324,7 @@ pub enum PolicyEvaluation {
         rule: CompactString,
         config: Option<ChallengeRules>,
     },
-    DefaultChallenge, // TODO mikel allow by default
+    DefaultAllow,
 }
 
 impl PolicyEngine {
@@ -353,10 +354,44 @@ impl PolicyEngine {
         }
     }
 
-    pub fn empty(default_difficulty: u32) -> Self {
+    pub fn default(default_difficulty: u32) -> Self {
+        let browser_rule = CompiledRule::compile(&Rule {
+            name: "generic-browser".into(),
+            action: Action::Weigh,
+            user_agent_regex: Some("Mozilla|Opera".into()),
+            path_regex: None,
+            headers_regex: None,
+            remote_addresses: None,
+            expression: None,
+            challenge: None,
+            weight: Some(Weight { adjust: 10 }),
+            geo_ip: None,
+            asns: None,
+        })
+        .expect("built-in rule must compile");
+
+        let thresholds = vec![
+            CompiledThreshold {
+                name: "minimal-suspicion".into(),
+                predicate: WeightPredicate::Lte(0),
+                action: Action::Allow,
+                challenge: None,
+            },
+            CompiledThreshold {
+                name: "moderate-suspicion".into(),
+                predicate: WeightPredicate::Gt(0),
+                action: Action::Challenge,
+                challenge: Some(ChallengeRules {
+                    algorithm: Some("fast".into()),
+                    difficulty: Some(default_difficulty),
+                    report_as: None,
+                }),
+            },
+        ];
+
         Self {
-            rules: Vec::new(),
-            thresholds: Vec::new(),
+            rules: vec![browser_rule],
+            thresholds,
             default_difficulty,
         }
     }
@@ -427,7 +462,7 @@ impl PolicyEngine {
             };
         }
 
-        PolicyEvaluation::DefaultChallenge
+        PolicyEvaluation::DefaultAllow
     }
 }
 
@@ -769,16 +804,16 @@ mod tests {
         // Only r1: weight = 10, not > 12 → DefaultChallenge
         assert!(matches!(
             engine.evaluate("/home", Some("Mozilla/5.0"), &empty_headers(), localhost()),
-            PolicyEvaluation::DefaultChallenge
+            PolicyEvaluation::DefaultAllow
         ));
     }
 
     #[test]
     fn no_rules_returns_default_challenge() {
-        let engine = PolicyEngine::empty(4);
+        let engine = PolicyEngine::default(4);
         assert!(matches!(
             engine.evaluate("/", None, &empty_headers(), localhost()),
-            PolicyEvaluation::DefaultChallenge
+            PolicyEvaluation::DefaultAllow
         ));
     }
 

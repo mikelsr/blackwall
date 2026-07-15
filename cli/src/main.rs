@@ -19,7 +19,7 @@ const APP_VERSION: &str = match option_env!("B7L_VERSION") {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let cfg = match config::load_config()? {
+    let (cfg, policy_engine) = match config::load_config()? {
         config::StartupMode::Version => {
             println!("Blackwall {APP_VERSION}");
             return Ok(());
@@ -32,7 +32,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             return Ok(());
         }
-        config::StartupMode::Run(cfg) => *cfg,
+        config::StartupMode::Run {
+            config,
+            policy_engine,
+        } => (*config, policy_engine),
     };
 
     log::init();
@@ -76,7 +79,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         info!("target keep-alive is disabled");
     }
 
-    let mode = RuntimeMode::from_config(cfg.proxy)?;
+    let mode = RuntimeMode::new(cfg.proxy, policy_engine)?;
     let mode_name = mode.name();
     let app = build_router(mode, forwarded_config);
 

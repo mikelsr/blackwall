@@ -10,6 +10,7 @@ use client::ClientAddr;
 use shared::{
     challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
     config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
+    policy::PolicyEngine,
 };
 use tower_http::trace::TraceLayer;
 
@@ -44,6 +45,7 @@ pub struct ProxyState {
     strip_base_prefix: bool,
     client: HttpsClient,
     challenge_service: ChallengeService,
+    policy_engine: PolicyEngine,
 }
 
 pub struct ChallengeService {
@@ -67,7 +69,7 @@ impl RuntimeMode {
         }
     }
 
-    pub fn from_config(config: ProxyConfig) -> Result<Self, ProxyInitError> {
+    pub fn new(config: ProxyConfig, policy_engine: PolicyEngine) -> Result<Self, ProxyInitError> {
         let ProxyConfig {
             target,
             target_host,
@@ -87,6 +89,7 @@ impl RuntimeMode {
                 url,
                 config.challenge,
                 Scheme::HTTP,
+                policy_engine,
             ),
             Target::Https(url) => Self::build_proxy_state(
                 target_host,
@@ -96,6 +99,7 @@ impl RuntimeMode {
                 url,
                 config.challenge,
                 Scheme::HTTPS,
+                policy_engine,
             ),
         }
     }
@@ -110,6 +114,7 @@ impl RuntimeMode {
         url: Url,
         challenge_config: ChallengeConfig,
         scheme: Scheme,
+        policy_engine: PolicyEngine,
     ) -> Result<RuntimeMode, ProxyInitError> {
         let Some(host) = url.host_str() else {
             return Err(ProxyInitError::InvalidTargetUrl {
@@ -155,6 +160,7 @@ impl RuntimeMode {
             strip_base_prefix,
             client,
             challenge_service,
+            policy_engine,
         })))
     }
 }
@@ -177,7 +183,7 @@ pub fn build_router(mode: RuntimeMode, forward_config: ForwardedHeadersConfig) -
             let api_routes = Router::new()
                 .route("/pass-challenge", get(handler::pass_challenge))
                 .route("/solver.wasm", axum::routing::get(handler::serve_wasm))
-                .layer(headers::ForwardedHeadersLayer::new(forward_config))
+                // .layer(headers::ForwardedHeadersLayer::new(forward_config)) // TODO mikel
                 .layer(TraceLayer::new_for_http())
                 .with_state(state.clone());
 

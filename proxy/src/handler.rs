@@ -2,7 +2,7 @@ use crate::embed::{
     ASSET_SOLVER_WASM, ASSET_SOLVER_WASM_BROTLI, ASSET_SOLVER_WASM_GZIP, ASSET_SOLVER_WASM_ZSTD,
     CHALLENGE_DECLARATION, HTML_PREFIX, HTML_SUFFIX, WIGGLE_ROOM,
 };
-use crate::{ClientAddr, ProxyState};
+use crate::{ClientAddr, ProxyState, headers::X_REAL_IP};
 use axum::extract::ConnectInfo;
 use axum::http::header::USER_AGENT;
 use axum::{
@@ -24,10 +24,13 @@ use serde_json;
 use shared::challenge::verify_solution;
 use shared::{
     challenge::{COOKIE_NAME, Challenge, ChallengeRecord, Solution},
+    policy::PolicyEvaluation,
     store::StoreError,
 };
 use std::collections::BTreeMap;
 use std::io::Write;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::Arc;
 use tracing::{debug, warn};
 use url::Url;
@@ -58,6 +61,7 @@ struct ChallengeInfo<'a> {
     pub identity: CompactString,
     pub headers: &'a HeaderMap,
     pub uri: &'a str,
+    pub difficulty_override: Option<u32>,
 }
 
 // TODO mikel: ergonomics
@@ -69,36 +73,65 @@ pub async fn challenge_middleware(
     next: Next,
 ) -> Response {
     let request_uri = req.uri().to_string();
-    debug!(uri = %request_uri, "challenge_middleware: processing request");
+    let path = req.uri().path();
+    let user_agent = req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok());
+    let remote_ip = get_remote_ip(req.headers(), &addr);
+    let policy_evaluation =
+        state
+            .policy_engine
+            .evaluate(path, user_agent, req.headers(), remote_ip);
 
-    if let Some(cookie) = cookie_jar.get(COOKIE_NAME) {
-        let val = cookie.value();
-        let preview = &val[..val.len().min(30)];
-        debug!(cookie_preview = %preview, "challenge_middleware: cookie found");
-
-        if let Some(claims) = state.challenge_service.token_service.verify(val) {
-            debug!(
-                challenge = %claims.challenge,
-                method = %claims.method,
-                "challenge_middleware: valid token, forwarding request"
-            );
-            return next.run(req).await;
-        } else {
-            // TODO mikel: tower spans?
-            debug!("challenge_middleware: token verification failed");
+    match policy_evaluation {
+        PolicyEvaluation::Allow { rule } => {
+            debug!(rule = %rule, uri = %request_uri, "policy: ALLOW, forwarding request");
+            next.run(req).await
         }
-    } else {
-        debug!("challenge_middleware: no cookie found");
+
+        PolicyEvaluation::Deny { rule } => {
+            debug!(rule = %rule, uri = %request_uri, "policy: DENY");
+            StatusCode::FORBIDDEN.into_response()
+        }
+
+        PolicyEvaluation::Challenge { rule, config } => {
+            debug!(rule = %rule, uri = %request_uri, "policy: CHALLENGE");
+            if check_token_cookie(&state, &cookie_jar).is_some() {
+                return next.run(req).await;
+            }
+            let difficulty = config.as_ref().and_then(|c| c.difficulty);
+            let identity = get_identity(req.headers(), &addr);
+            let info = ChallengeInfo {
+                identity,
+                headers: req.headers(),
+                uri: path,
+                difficulty_override: difficulty,
+            };
+            serve_challenge_page(State(state), &info).await
+        }
+
+        PolicyEvaluation::DefaultAllow => {
+            debug!(uri = %request_uri, "policy: no rule matched, allowing");
+            next.run(req).await
+        }
     }
+}
 
-    let identity = get_identity(req.headers(), &addr);
-    let challenge_info = ChallengeInfo {
-        identity,
-        headers: req.headers(),
-        uri: req.uri().path(),
-    };
+fn check_token_cookie(state: &ProxyState, jar: &CookieJar) -> Option<()> {
+    let cookie = jar.get(COOKIE_NAME)?;
+    let val = cookie.value();
+    let preview = &val[..val.len().min(30)];
+    debug!(cookie_preview = %preview, "challenge_middleware: cookie found");
 
-    serve_challenge_page(State(state), &challenge_info).await
+    if let Some(claims) = state.challenge_service.token_service.verify(val) {
+        debug!(
+            challenge = %claims.challenge,
+            method = %claims.method,
+            "challenge_middleware: valid token, forwarding request"
+        );
+        Some(())
+    } else {
+        debug!("challenge_middleware: token verification failed, re-challenging");
+        None
+    }
 }
 
 /// Extracts the user's identity from the request headers rather than the physical client address;
@@ -109,6 +142,14 @@ fn get_identity(headers: &HeaderMap, addr: &ClientAddr) -> CompactString {
         .and_then(|v| v.to_str().ok())
         .map(CompactString::new)
         .unwrap_or_else(|| addr.identity())
+}
+
+fn get_remote_ip(headers: &HeaderMap, addr: &ClientAddr) -> IpAddr {
+    headers
+        .get(X_REAL_IP)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|ip| IpAddr::from_str(ip).ok())
+        .unwrap_or_else(|| addr.ip())
 }
 
 async fn serve_challenge_page(
@@ -193,7 +234,9 @@ async fn create_and_store_challenge(
 ) -> Result<Challenge, StoreError> {
     let now = Timestamp::now(NoContext);
     let id = Uuid::new_v7(now);
-    let difficulty = state.challenge_service.challenge_config.difficulty;
+    let difficulty = challenge_info
+        .difficulty_override
+        .unwrap_or(state.challenge_service.challenge_config.difficulty);
     let mut raw_random_data = vec![0u8; 32];
     rng().fill_bytes(&mut raw_random_data);
     let random_data = Bytes::copy_from_slice(&raw_random_data);
