@@ -42,7 +42,7 @@ pub struct Weight {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Expr {
+pub enum Expression {
     Simple(String),
     All { all: Vec<String> },
     Any { any: Vec<String> },
@@ -74,7 +74,7 @@ pub struct Rule {
     #[serde(default, rename = "remote_addresses")]
     pub remote_addresses: Option<Vec<String>>,
     #[serde(default)]
-    pub expr: Option<Expr>,
+    pub expression: Option<Expression>,
     #[serde(default)]
     pub challenge: Option<ChallengeRules>,
     #[serde(default)]
@@ -95,7 +95,7 @@ pub struct CompiledRule {
     path_regex: Option<Regex>,
     user_agent_regex: Option<Regex>,
     headers_regex: Option<Vec<(CompactString, Regex)>>,
-    expr: Option<CompiledRuleExpr>,
+    expression: Option<CompiledRuleExpression>,
     remote_addresses: Option<Vec<IpNet>>,
     challenge: Option<ChallengeRules>,
     weight: Option<Weight>,
@@ -134,8 +134,8 @@ impl CompiledRule {
             })
             .transpose()?;
 
-        let expr = rule
-            .expr
+        let expression = rule
+            .expression
             .as_ref()
             .map(|e| compile_rule_expr(e, &rule.name))
             .transpose()?;
@@ -161,7 +161,7 @@ impl CompiledRule {
             || user_agent_regex.is_some()
             || headers_regex.is_some()
             || remote_addresses.is_some()
-            || expr.is_some()
+            || expression.is_some()
             || rule.geo_ip.is_some()
             || rule.asns.is_some();
 
@@ -183,7 +183,7 @@ impl CompiledRule {
             path_regex,
             user_agent_regex,
             headers_regex,
-            expr,
+            expression,
             remote_addresses,
             challenge: rule.challenge.clone(),
             weight,
@@ -221,7 +221,7 @@ impl CompiledRule {
             }
         }
 
-        if let Some(CompiledRuleExpr::HasHeader(name)) = &self.expr {
+        if let Some(CompiledRuleExpression::HasHeader(name)) = &self.expression {
             if !headers.contains_key(name.as_str()) {
                 return false;
             }
@@ -238,7 +238,7 @@ impl CompiledRule {
 }
 
 #[derive(Debug)]
-enum CompiledRuleExpr {
+enum CompiledRuleExpression {
     HasHeader(HeaderName),
 }
 
@@ -262,19 +262,19 @@ fn compile_regex(
 }
 
 fn compile_rule_expr(
-    expr: &Expr,
+    expression: &Expression,
     rule_name: &CompactString,
-) -> Result<CompiledRuleExpr, PolicyCompileError> {
-    let Expr::Simple(src) = expr else {
-        return Err(PolicyCompileError::UnsupportedRuleExpr {
+) -> Result<CompiledRuleExpression, PolicyCompileError> {
+    let Expression::Simple(src) = expression else {
+        return Err(PolicyCompileError::UnsupportedRuleExpression {
             name: rule_name.clone(),
-            expr: format!("{expr:?}"),
+            expression: format!("{expression:?}"),
         });
     };
 
-    let unsupported_expr = || PolicyCompileError::UnsupportedRuleExpr {
+    let unsupported_expr = || PolicyCompileError::UnsupportedRuleExpression {
         name: rule_name.clone(),
-        expr: src.clone(),
+        expression: src.clone(),
     };
 
     let header_name = src
@@ -289,13 +289,13 @@ fn compile_rule_expr(
     let header_name =
         HeaderName::from_bytes(header_name.as_bytes()).map_err(|_| unsupported_expr())?;
 
-    Ok(CompiledRuleExpr::HasHeader(header_name))
+    Ok(CompiledRuleExpression::HasHeader(header_name))
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct Threshold {
     name: CompactString,
-    expr: Expr,
+    expression: Expression,
     action: Action,
 
     #[serde(default)]
@@ -327,17 +327,17 @@ impl CompiledThreshold {
     }
 
     pub(crate) fn compile(threshold: Threshold) -> Result<Self, PolicyCompileError> {
-        let (logic, expr) = match threshold.expr {
-            Expr::Simple(expr) => (ThresholdLogic::All, vec![expr]),
-            Expr::All { all } => (ThresholdLogic::All, all),
-            Expr::Any { any } => (ThresholdLogic::Any, any),
+        let (logic, expr) = match threshold.expression {
+            Expression::Simple(expr) => (ThresholdLogic::All, vec![expr]),
+            Expression::All { all } => (ThresholdLogic::All, all),
+            Expression::Any { any } => (ThresholdLogic::Any, any),
         };
 
         let predicates = expr
             .iter()
-            .map(|exp| WeightPredicate::parse(&exp))
+            .map(|expr| WeightPredicate::parse(&expr))
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|cause| PolicyCompileError::InvalidThresholdExpr {
+            .map_err(|cause| PolicyCompileError::InvalidThresholdExpression {
                 name: threshold.name.clone(),
                 cause,
             })?;
@@ -362,11 +362,11 @@ pub enum WeightPredicate {
 }
 
 impl WeightPredicate {
-    pub fn parse(expr: &str) -> Result<Self, String> {
-        let rest = expr
+    pub fn parse(expression: &str) -> Result<Self, String> {
+        let rest = expression
             .trim()
             .strip_prefix("weight")
-            .ok_or_else(|| format!("expression must start with 'weight': {expr:?}"))?
+            .ok_or_else(|| format!("expression must start with 'weight': {expression:?}"))?
             .trim_start();
 
         // Two-char operators before single-char.
@@ -386,7 +386,7 @@ impl WeightPredicate {
             return Ok(Self::Eq(parse_i32(n)?));
         }
 
-        Err(format!("unknown operator in expression: {expr:?}"))
+        Err(format!("unknown operator in expression: {expression:?}"))
     }
 
     #[inline]
@@ -464,7 +464,7 @@ impl PolicyEngine {
             path_regex: None,
             headers_regex: None,
             remote_addresses: None,
-            expr: None,
+            expression: None,
             challenge: None,
             weight: Some(Weight { adjust: 10 }),
             geo_ip: None,
@@ -587,7 +587,7 @@ pub enum PolicyCompileError {
         field: &'static str,
         source: regex::Error,
     },
-    InvalidThresholdExpr {
+    InvalidThresholdExpression {
         name: CompactString,
         cause: String,
     },
@@ -598,9 +598,9 @@ pub enum PolicyCompileError {
         name: CompactString,
         field: &'static str,
     },
-    UnsupportedRuleExpr {
+    UnsupportedRuleExpression {
         name: CompactString,
-        expr: String,
+        expression: String,
     },
 }
 
@@ -627,7 +627,7 @@ impl fmt::Display for PolicyCompileError {
             } => {
                 write!(f, "rule {name:?}: invalid {field}: {source}")
             }
-            Self::InvalidThresholdExpr { name, cause } => {
+            Self::InvalidThresholdExpression { name, cause } => {
                 write!(f, "rule {name:?}: invalid threshold expression: {cause}")
             }
 
@@ -645,8 +645,11 @@ impl fmt::Display for PolicyCompileError {
                     "rule {name:?}: {field} ends with newline (try >- instead of > in yaml)"
                 )
             }
-            Self::UnsupportedRuleExpr { name, expr } => {
-                write!(f, "rule {name:?}: unsupported rule expression: {expr}")
+            Self::UnsupportedRuleExpression { name, expression } => {
+                write!(
+                    f,
+                    "rule {name:?}: unsupported rule expression: {expression}"
+                )
             }
         }
     }
@@ -686,7 +689,7 @@ mod tests {
             user_agent_regex: None,
             headers_regex: None,
             remote_addresses: None,
-            expr: None,
+            expression: None,
             challenge: None,
             weight: None,
             geo_ip: None,
@@ -757,7 +760,7 @@ mod tests {
     #[test]
     fn compile_accepts_expr_as_sole_matcher() {
         let mut r = rule("expr", Action::Allow);
-        r.expr = Some(Expr::Simple(r#""X-Firefox-Ai" in headers"#.into()));
+        r.expression = Some(Expression::Simple(r#""X-Firefox-Ai" in headers"#.into()));
         assert!(CompiledRule::compile(&r).is_ok());
     }
 
@@ -791,7 +794,7 @@ mod tests {
     #[test]
     fn matches_header_present_expression() {
         let mut rule = rule("firefox-ai", Action::Weigh);
-        rule.expr = Some(Expr::Simple(r#""X-Firefox-Ai" in headers"#.into()));
+        rule.expression = Some(Expression::Simple(r#""X-Firefox-Ai" in headers"#.into()));
 
         let compiled = CompiledRule::compile(&rule).unwrap();
 
@@ -805,11 +808,11 @@ mod tests {
     #[test]
     fn rejects_unsupported_rule_expression() {
         let mut rule = rule("unsupported", Action::Allow);
-        rule.expr = Some(Expr::Simple("method == 'POST'".into()));
+        rule.expression = Some(Expression::Simple("method == 'POST'".into()));
 
         assert!(matches!(
             CompiledRule::compile(&rule),
-            Err(PolicyCompileError::UnsupportedRuleExpr { .. })
+            Err(PolicyCompileError::UnsupportedRuleExpression { .. })
         ));
     }
 
