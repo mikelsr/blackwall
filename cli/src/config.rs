@@ -6,7 +6,7 @@ use shared::config::{
     BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
     PathRewriteConfig, ProxyConfig, Target,
 };
-use shared::policy::PolicyEngine;
+use shared::policy::compile::PolicyEngine;
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let env_config = dotenvy::dotenv();
@@ -41,7 +41,7 @@ impl StartupMode {
         }
 
         let config = args.into_config()?;
-        let policy_engine = PolicyEngine::default_policy(config.proxy.challenge.difficulty);
+        let policy_engine = PolicyEngine::default(config.proxy.challenge.difficulty);
 
         Ok(StartupMode::Run {
             config: Box::new(config),

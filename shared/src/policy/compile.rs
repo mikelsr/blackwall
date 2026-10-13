@@ -1,6 +1,5 @@
-/// TODO mikel: document before I forget
 use compact_str::CompactString;
-use http::HeaderMap;
+use http::{HeaderMap, HeaderName};
 use ipnet::IpNet;
 use regex::{self, Regex};
 use serde::{Deserialize, Serialize};
@@ -43,7 +42,7 @@ pub struct Weight {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
-pub enum Expression {
+pub enum Expr {
     Simple(String),
     All { all: Vec<String> },
     Any { any: Vec<String> },
@@ -72,15 +71,15 @@ pub struct Rule {
     pub path_regex: Option<String>,
     #[serde(default)]
     pub headers_regex: Option<BTreeMap<String, String>>,
-    #[serde(default)]
+    #[serde(default, rename = "remote_addresses")]
     pub remote_addresses: Option<Vec<String>>,
     #[serde(default)]
-    pub expression: Option<Expression>,
+    pub expr: Option<Expr>,
     #[serde(default)]
     pub challenge: Option<ChallengeRules>,
     #[serde(default)]
     pub weight: Option<Weight>,
-    #[serde(default)]
+    #[serde(default, rename = "geoip")]
     pub geo_ip: Option<GeoIp>,
     #[serde(default)]
     pub asns: Option<Asns>,
@@ -96,6 +95,7 @@ pub struct CompiledRule {
     path_regex: Option<Regex>,
     user_agent_regex: Option<Regex>,
     headers_regex: Option<Vec<(CompactString, Regex)>>,
+    expr: Option<CompiledRuleExpr>,
     remote_addresses: Option<Vec<IpNet>>,
     challenge: Option<ChallengeRules>,
     weight: Option<Weight>,
@@ -105,7 +105,7 @@ impl CompiledRule {
     pub fn compile(rule: &Rule) -> Result<Self, PolicyCompileError> {
         if rule.user_agent_regex.is_some() && rule.path_regex.is_some() {
             return Err(PolicyCompileError::BothUserAgentAndPath {
-                rule_name: rule.name.clone(),
+                name: rule.name.clone(),
             });
         }
 
@@ -134,6 +134,12 @@ impl CompiledRule {
             })
             .transpose()?;
 
+        let expr = rule
+            .expr
+            .as_ref()
+            .map(|e| compile_rule_expr(e, &rule.name))
+            .transpose()?;
+
         let remote_addresses = rule
             .remote_addresses
             .as_ref()
@@ -142,7 +148,7 @@ impl CompiledRule {
                     .map(|s| {
                         s.parse::<IpNet>()
                             .map_err(|source| PolicyCompileError::InvalidCidr {
-                                rule_name: rule.name.clone(),
+                                name: rule.name.clone(),
                                 value: s.clone(),
                                 source,
                             })
@@ -155,13 +161,13 @@ impl CompiledRule {
             || user_agent_regex.is_some()
             || headers_regex.is_some()
             || remote_addresses.is_some()
-            || rule.expression.is_some()
+            || expr.is_some()
             || rule.geo_ip.is_some()
             || rule.asns.is_some();
 
         if !has_matcher {
             return Err(PolicyCompileError::NoMatchers {
-                rule_name: rule.name.clone(),
+                name: rule.name.clone(),
             });
         }
 
@@ -177,6 +183,7 @@ impl CompiledRule {
             path_regex,
             user_agent_regex,
             headers_regex,
+            expr,
             remote_addresses,
             challenge: rule.challenge.clone(),
             weight,
@@ -214,6 +221,12 @@ impl CompiledRule {
             }
         }
 
+        if let Some(CompiledRuleExpr::HasHeader(name)) = &self.expr {
+            if !headers.contains_key(name.as_str()) {
+                return false;
+            }
+        }
+
         if let Some(nets) = &self.remote_addresses {
             if !nets.iter().any(|net| net.contains(&remote_ip)) {
                 return false;
@@ -224,6 +237,11 @@ impl CompiledRule {
     }
 }
 
+#[derive(Debug)]
+enum CompiledRuleExpr {
+    HasHeader(HeaderName),
+}
+
 fn compile_regex(
     pattern: &str,
     rule_name: &CompactString,
@@ -232,24 +250,106 @@ fn compile_regex(
     // Anubis rejects newlines.
     if pattern.ends_with('\n') {
         return Err(PolicyCompileError::TrailingNewline {
-            rule_name: rule_name.clone(),
+            name: rule_name.clone(),
             field,
         });
     }
     Regex::new(pattern).map_err(|source| PolicyCompileError::InvalidRegex {
-        rule_name: rule_name.clone(),
+        name: rule_name.clone(),
         field,
         source,
     })
+}
+
+fn compile_rule_expr(
+    expr: &Expr,
+    rule_name: &CompactString,
+) -> Result<CompiledRuleExpr, PolicyCompileError> {
+    let Expr::Simple(src) = expr else {
+        return Err(PolicyCompileError::UnsupportedRuleExpr {
+            name: rule_name.clone(),
+            expr: format!("{expr:?}"),
+        });
+    };
+
+    let unsupported_expr = || PolicyCompileError::UnsupportedRuleExpr {
+        name: rule_name.clone(),
+        expr: src.clone(),
+    };
+
+    let header_name = src
+        .trim()
+        .strip_suffix(" in headers")
+        .map(str::trim_end)
+        .and_then(|value| value.strip_prefix('"'))
+        .and_then(|value| value.strip_suffix('"'))
+        .filter(|value| !value.is_empty())
+        .ok_or_else(unsupported_expr)?;
+
+    let header_name =
+        HeaderName::from_bytes(header_name.as_bytes()).map_err(|_| unsupported_expr())?;
+
+    Ok(CompiledRuleExpr::HasHeader(header_name))
+}
+
+#[derive(Debug, Deserialize)]
+pub(crate) struct Threshold {
+    name: CompactString,
+    expr: Expr,
+    action: Action,
+
+    #[serde(default)]
+    challenge: Option<ChallengeRules>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ThresholdLogic {
+    All,
+    Any,
 }
 
 // Weight thresholds.
 #[derive(Debug)]
 pub struct CompiledThreshold {
     pub name: CompactString,
-    pub predicate: WeightPredicate,
+    pub predicates: Vec<WeightPredicate>,
+    pub logic: ThresholdLogic,
     pub action: Action,
     pub challenge: Option<ChallengeRules>,
+}
+
+impl CompiledThreshold {
+    pub fn matches(&self, weight: i32) -> bool {
+        match self.logic {
+            ThresholdLogic::All => self.predicates.iter().all(|pred| pred.evaluate(weight)),
+            ThresholdLogic::Any => self.predicates.iter().any(|pred| pred.evaluate(weight)),
+        }
+    }
+
+    pub(crate) fn compile(threshold: Threshold) -> Result<Self, PolicyCompileError> {
+        let (logic, expr) = match threshold.expr {
+            Expr::Simple(expr) => (ThresholdLogic::All, vec![expr]),
+            Expr::All { all } => (ThresholdLogic::All, all),
+            Expr::Any { any } => (ThresholdLogic::Any, any),
+        };
+
+        let predicates = expr
+            .iter()
+            .map(|exp| WeightPredicate::parse(&exp))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|cause| PolicyCompileError::InvalidThresholdExpr {
+                name: threshold.name.clone(),
+                cause,
+            })?;
+
+        Ok(Self {
+            name: threshold.name,
+            predicates: predicates,
+            logic,
+            action: threshold.action,
+            challenge: threshold.challenge,
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -336,7 +436,8 @@ impl PolicyEngine {
         let thresholds = if thresholds.is_empty() {
             vec![CompiledThreshold {
                 name: CompactString::from(LEGACY_ANUBIS_NAME),
-                predicate: WeightPredicate::Gt(0),
+                logic: ThresholdLogic::All,
+                predicates: vec![WeightPredicate::Gt(0)],
                 action: Action::Challenge,
                 challenge: Some(ChallengeRules {
                     algorithm: Some(DEFAULT_ALGORITHM.into()),
@@ -355,6 +456,7 @@ impl PolicyEngine {
     }
 
     pub fn default(default_difficulty: u32) -> Self {
+        // TODO mikel: load from YAML
         let browser_rule = CompiledRule::compile(&Rule {
             name: "generic-browser".into(),
             action: Action::Weigh,
@@ -362,7 +464,7 @@ impl PolicyEngine {
             path_regex: None,
             headers_regex: None,
             remote_addresses: None,
-            expression: None,
+            expr: None,
             challenge: None,
             weight: Some(Weight { adjust: 10 }),
             geo_ip: None,
@@ -373,13 +475,15 @@ impl PolicyEngine {
         let thresholds = vec![
             CompiledThreshold {
                 name: "minimal-suspicion".into(),
-                predicate: WeightPredicate::Lte(0),
+                logic: ThresholdLogic::All,
+                predicates: vec![WeightPredicate::Lte(0)],
                 action: Action::Allow,
                 challenge: None,
             },
             CompiledThreshold {
                 name: "moderate-suspicion".into(),
-                predicate: WeightPredicate::Gt(0),
+                logic: ThresholdLogic::All,
+                predicates: vec![WeightPredicate::Gt(0)],
                 action: Action::Challenge,
                 challenge: Some(ChallengeRules {
                     algorithm: Some("fast".into()),
@@ -442,7 +546,7 @@ impl PolicyEngine {
         }
 
         for threshold in &self.thresholds {
-            if !threshold.predicate.evaluate(weight) {
+            if !threshold.matches(weight) {
                 continue;
             }
 
@@ -470,64 +574,79 @@ impl PolicyEngine {
 
 #[derive(Debug)]
 pub enum PolicyCompileError {
-    InvalidRegex {
-        rule_name: CompactString,
-        field: &'static str,
-        source: regex::Error,
+    BothUserAgentAndPath {
+        name: CompactString,
     },
     InvalidCidr {
-        rule_name: CompactString,
+        name: CompactString,
         value: String,
         source: ipnet::AddrParseError,
     },
+    InvalidRegex {
+        name: CompactString,
+        field: &'static str,
+        source: regex::Error,
+    },
+    InvalidThresholdExpr {
+        name: CompactString,
+        cause: String,
+    },
     NoMatchers {
-        rule_name: CompactString,
+        name: CompactString,
     },
     TrailingNewline {
-        rule_name: CompactString,
+        name: CompactString,
         field: &'static str,
     },
-    BothUserAgentAndPath {
-        rule_name: CompactString,
+    UnsupportedRuleExpr {
+        name: CompactString,
+        expr: String,
     },
 }
 
 impl fmt::Display for PolicyCompileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::InvalidRegex {
-                rule_name,
-                field,
-                source,
-            } => {
-                write!(f, "rule {rule_name:?}: invalid {field}: {source}")
+            Self::BothUserAgentAndPath { name } => {
+                write!(
+                    f,
+                    "rule {name:?}: must set either user_agent_regex or path_regex, not both"
+                )
             }
             Self::InvalidCidr {
-                rule_name,
+                name,
                 value,
                 source,
             } => {
-                write!(f, "rule {rule_name:?}: invalid CIDR {value:?}: {source}")
+                write!(f, "rule {name:?}: invalid CIDR {value:?}: {source}")
             }
+            Self::InvalidRegex {
+                name,
+                field,
+                source,
+            } => {
+                write!(f, "rule {name:?}: invalid {field}: {source}")
+            }
+            Self::InvalidThresholdExpr { name, cause } => {
+                write!(f, "rule {name:?}: invalid threshold expression: {cause}")
+            }
+
             // TODO mikel: Thoth support?
-            Self::NoMatchers { rule_name } => {
+            Self::NoMatchers { name } => {
                 write!(
                     f,
-                    "rule {rule_name:?}: must set one of user_agent_regex,\
+                    "rule {name:?}: must set one of user_agent_regex,\
                     path_regex, headers_regex, remote_addresses, expression, or Thoth keyword"
                 )
             }
-            Self::TrailingNewline { rule_name, field } => {
+            Self::TrailingNewline { name, field } => {
                 write!(
                     f,
-                    "rule {rule_name:?}: {field} ends with newline (try >- instead of > in yaml)"
+                    "rule {name:?}: {field} ends with newline (try >- instead of > in yaml)"
                 )
             }
-            Self::BothUserAgentAndPath { rule_name } => {
-                write!(
-                    f,
-                    "rule {rule_name:?}: must set either user_agent_regex or path_regex, not both"
-                )
+            Self::UnsupportedRuleExpr { name, expr } => {
+                write!(f, "rule {name:?}: unsupported rule expression: {expr}")
             }
         }
     }
@@ -567,7 +686,7 @@ mod tests {
             user_agent_regex: None,
             headers_regex: None,
             remote_addresses: None,
-            expression: None,
+            expr: None,
             challenge: None,
             weight: None,
             geo_ip: None,
@@ -636,9 +755,9 @@ mod tests {
     }
 
     #[test]
-    fn compile_accepts_expression_as_sole_matcher() {
+    fn compile_accepts_expr_as_sole_matcher() {
         let mut r = rule("expr", Action::Allow);
-        r.expression = Some(Expression::Simple("weight > 0".into()));
+        r.expr = Some(Expr::Simple(r#""X-Firefox-Ai" in headers"#.into()));
         assert!(CompiledRule::compile(&r).is_ok());
     }
 
@@ -667,6 +786,31 @@ mod tests {
         let c = CompiledRule::compile(&r).unwrap();
         assert!(c.matches("/api/users", None, &empty_headers(), localhost()));
         assert!(!c.matches("/home", None, &empty_headers(), localhost()));
+    }
+
+    #[test]
+    fn matches_header_present_expression() {
+        let mut rule = rule("firefox-ai", Action::Weigh);
+        rule.expr = Some(Expr::Simple(r#""X-Firefox-Ai" in headers"#.into()));
+
+        let compiled = CompiledRule::compile(&rule).unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Firefox-Ai", "1".parse().unwrap());
+
+        assert!(compiled.matches("/", None, &headers, localhost()));
+        assert!(!compiled.matches("/", None, &empty_headers(), localhost()));
+    }
+
+    #[test]
+    fn rejects_unsupported_rule_expression() {
+        let mut rule = rule("unsupported", Action::Allow);
+        rule.expr = Some(Expr::Simple("method == 'POST'".into()));
+
+        assert!(matches!(
+            CompiledRule::compile(&rule),
+            Err(PolicyCompileError::UnsupportedRuleExpr { .. })
+        ));
     }
 
     #[test]
@@ -773,7 +917,8 @@ mod tests {
 
         let thresholds = vec![CompiledThreshold {
             name: "high-suspicion".into(),
-            predicate: WeightPredicate::Gt(12),
+            logic: ThresholdLogic::All,
+            predicates: vec![WeightPredicate::Gt(12)],
             action: Action::Challenge,
             challenge: Some(ChallengeRules {
                 difficulty: Some(6),
@@ -809,11 +954,12 @@ mod tests {
     }
 
     #[test]
-    fn no_rules_returns_default_challenge() {
+    fn default_policy_allows_zero_weight_requests() {
         let engine = PolicyEngine::default(4);
+
         assert!(matches!(
             engine.evaluate("/", None, &empty_headers(), localhost()),
-            PolicyEvaluation::DefaultAllow
+            PolicyEvaluation::Allow { rule } if rule == "minimal-suspicion" // TODO mikel: const?
         ));
     }
 
@@ -845,7 +991,8 @@ mod tests {
             ],
             vec![CompiledThreshold {
                 name: "t".into(),
-                predicate: WeightPredicate::Gt(0),
+                logic: ThresholdLogic::All,
+                predicates: vec![WeightPredicate::Gt(0)],
                 action: Action::Deny,
                 challenge: None,
             }],

@@ -10,7 +10,7 @@ use client::ClientAddr;
 use shared::{
     challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
     config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
-    policy::PolicyEngine,
+    policy::compile::PolicyEngine,
 };
 use tower_http::trace::TraceLayer;
 

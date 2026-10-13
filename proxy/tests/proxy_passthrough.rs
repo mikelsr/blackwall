@@ -11,7 +11,7 @@ use shared::config::{
     BasePrefix, ChallengeConfig, PathRewriteConfig, ProxyConfig, Target,
     proxy::ForwardedHeadersConfig,
 };
-use shared::policy::PolicyEngine;
+use shared::policy::compile::PolicyEngine; // TODO mikel: I don't love PolicyEngine being in `compile`...
 
 use std::sync::Once;
 use std::time::Duration;
