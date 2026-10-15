@@ -1,5 +1,6 @@
 /// TODO mikel: document before I forget
 pub mod compile;
+pub mod dns;
 pub mod embed;
 pub mod file;
 pub mod model;
