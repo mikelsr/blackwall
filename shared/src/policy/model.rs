@@ -1,10 +1,35 @@
+use cel::{Context, Program, Value};
 use compact_str::CompactString;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
+use std::collections::HashMap;
+use std::fmt;
 
 const CEL_AND: &str = " && ";
 const CEL_OR: &str = " || ";
+
+const CEL_REMOTE_ADDRESS: &str = "remoteAddress";
+const CEL_CONTENT_LENGTH: &str = "contentLength";
+const CEL_USER_AGENT: &str = "userAgent";
+const CEL_HOST: &str = "host";
+const CEL_METHOD: &str = "method";
+const CEL_PATH: &str = "path";
+const CEL_QUERY: &str = "query";
+const CEL_HEADERS: &str = "headers";
+const CEL_LOAD_1M: &str = "load_1m";
+const CEL_LOAD_5M: &str = "load_5m";
+const CEL_LOAD_15M: &str = "load_15m";
+
+const CEL_REMOTE_ADDRESS_DEFAULT: &str = "127.0.0.1";
+const CEL_CONTENT_LENGTH_DEFAULT: i64 = 0;
+const CEL_USER_AGENT_DEFAULT: &str = "Mozilla/5.0";
+const CEL_HOST_DEFAULT: &str = "example.test";
+const CEL_METHOD_DEFAULT: &str = "GET";
+const CEL_PATH_DEFAULT: &str = "/";
+const CEL_LOAD_1M_DEFAULT: f64 = 0.0;
+const CEL_LOAD_5M_DEFAULT: f64 = 0.0;
+const CEL_LOAD_15M_DEFAULT: f64 = 0.0;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -56,6 +81,54 @@ impl Expression {
             ),
         }
     }
+
+    pub(crate) fn validate_cel(&self) -> Result<(), CelValidationError> {
+        let source = self.as_cel();
+        let program = Program::compile(source.as_ref()).map_err(CelValidationError::Parse)?;
+        let mut context = Context::default();
+
+        context
+            .add_variable(CEL_REMOTE_ADDRESS, CEL_REMOTE_ADDRESS_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_CONTENT_LENGTH, CEL_CONTENT_LENGTH_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_USER_AGENT, CEL_USER_AGENT_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_HOST, CEL_HOST_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_METHOD, CEL_METHOD_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_PATH, CEL_PATH_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_QUERY, HashMap::<String, String>::new())
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_HEADERS, HashMap::<String, String>::new())
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_1M, CEL_LOAD_1M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_5M, CEL_LOAD_5M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_15M, CEL_LOAD_15M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+
+        match program
+            .execute(&context)
+            .map_err(CelValidationError::Evaluation)?
+        {
+            Value::Bool(_) => Ok(()),
+            _ => Err(CelValidationError::NonBooleanResult),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -101,4 +174,34 @@ pub(crate) struct Threshold {
     pub(crate) action: Action,
     #[serde(default)]
     pub(crate) challenge: Option<ChallengeRules>,
+}
+
+#[derive(Debug)]
+pub enum CelValidationError {
+    Parse(cel::ParseErrors),
+    Binding(cel::SerializationError),
+    Evaluation(cel::ExecutionError),
+    NonBooleanResult,
+}
+
+impl fmt::Display for CelValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(source) => write!(f, "invalid CEL syntax: {source}"),
+            Self::Binding(source) => write!(f, "failed to bind CEL validation value: {source}"),
+            Self::Evaluation(source) => write!(f, "invalid CEL expression: {source}"),
+            Self::NonBooleanResult => write!(f, "CEL expression must return a boolean"),
+        }
+    }
+}
+
+impl std::error::Error for CelValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Parse(source) => Some(source),
+            Self::Binding(source) => Some(source),
+            Self::Evaluation(source) => Some(source),
+            Self::NonBooleanResult => None,
+        }
+    }
 }
