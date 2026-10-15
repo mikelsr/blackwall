@@ -99,7 +99,14 @@ pub async fn challenge_middleware(
         host,
         headers,
     };
-    let policy_evaluation = state.policy_engine.evaluate(&policy_request);
+
+    let policy_evaluation = match state.policy_engine.evaluate(&policy_request) {
+        Ok(evaluation) => evaluation,
+        Err(error) => {
+            warn!(%error, "policy evaluation failed");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     match policy_evaluation {
         PolicyEvaluation::Allow { rule } => {

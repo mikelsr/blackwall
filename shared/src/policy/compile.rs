@@ -1,12 +1,11 @@
+use cel::{Context, Program, Value};
 use compact_str::CompactString;
-use http::HeaderName;
 use ipnet::IpNet;
 use regex::{self, Regex};
+use std::collections::HashMap;
 use std::fmt;
 
-use super::model::{
-    Action, CelValidationError, ChallengeRules, Expression, Rule, Threshold, Weight,
-};
+use super::model::*;
 use super::request::PolicyRequest;
 
 const PATH_REGEX: &str = "path_regex";
@@ -125,16 +124,20 @@ impl CompiledRule {
         })
     }
 
-    pub fn matches(&self, request: &PolicyRequest<'_>) -> bool {
+    pub fn matches(
+        &self,
+        context: &Context<'_, '_>,
+        request: &PolicyRequest<'_>,
+    ) -> Result<bool, PolicyMatchError> {
         if let Some(re) = &self.path_regex {
             if !re.is_match(request.path) {
-                return false;
+                return Ok(false);
             }
         }
 
         if let Some(re) = &self.user_agent_regex {
             if !re.is_match(request.user_agent.unwrap_or("")) {
-                return false;
+                return Ok(false);
             }
         }
 
@@ -146,30 +149,39 @@ impl CompiledRule {
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("");
                 if !re.is_match(value) {
-                    return false;
+                    return Ok(false);
                 }
             }
         }
 
-        if let Some(CompiledRuleExpression::HasHeader(name)) = &self.expression {
-            if !request.headers.contains_key(name.as_str()) {
-                return false;
+        if let Some(CompiledRuleExpression::Cel(program)) = &self.expression {
+            match program
+                .execute(context)
+                .map_err(PolicyMatchError::Evaluation)?
+            {
+                Value::Bool(true) => {}
+                Value::Bool(false) => return Ok(false),
+                _ => {
+                    return Err(PolicyMatchError::NonBooleanExpression {
+                        rule: self.name.clone(),
+                    });
+                }
             }
         }
 
         if let Some(nets) = &self.remote_addresses {
             if !nets.iter().any(|net| net.contains(&request.remote_address)) {
-                return false;
+                return Ok(false);
             }
         }
 
-        true
+        Ok(true)
     }
 }
 
 #[derive(Debug)]
 enum CompiledRuleExpression {
-    HasHeader(HeaderName),
+    Cel(Program),
 }
 
 fn compile_regex(
@@ -195,31 +207,67 @@ fn compile_rule_expr(
     expression: &Expression,
     rule_name: &CompactString,
 ) -> Result<CompiledRuleExpression, PolicyCompileError> {
-    let Expression::Simple(src) = expression else {
-        return Err(PolicyCompileError::UnsupportedRuleExpression {
+    let source = expression.as_cel();
+
+    let program = Program::compile(source.as_ref()).map_err(|source| {
+        PolicyCompileError::InvalidCelExpression {
             name: rule_name.clone(),
-            expression: format!("{expression:?}"),
-        });
-    };
+            source: CelValidationError::Parse(source),
+        }
+    })?;
 
-    let unsupported_expr = || PolicyCompileError::UnsupportedRuleExpression {
-        name: rule_name.clone(),
-        expression: src.clone(),
-    };
+    Ok(CompiledRuleExpression::Cel(program))
+}
 
-    let header_name = src
-        .trim()
-        .strip_suffix(" in headers")
-        .map(str::trim_end)
-        .and_then(|value| value.strip_prefix('"'))
-        .and_then(|value| value.strip_suffix('"'))
-        .filter(|value| !value.is_empty())
-        .ok_or_else(unsupported_expr)?;
+fn cel_headers(headers: &http::HeaderMap) -> HashMap<String, String> {
+    headers
+        .keys()
+        .filter_map(|name| {
+            let value = headers.get(name)?.to_str().ok()?;
 
-    let header_name =
-        HeaderName::from_bytes(header_name.as_bytes()).map_err(|_| unsupported_expr())?;
+            Some((canonical_header_name(name.as_str()), value.to_owned()))
+        })
+        .collect()
+}
 
-    Ok(CompiledRuleExpression::HasHeader(header_name))
+fn canonical_header_name(name: &str) -> String {
+    name.split('-')
+        .map(|segment| {
+            let mut chars = segment.chars();
+            let Some(first) = chars.next() else {
+                return String::new();
+            };
+
+            let mut result = String::with_capacity(segment.len());
+            result.push(first.to_ascii_uppercase());
+            result.extend(chars.map(|character| character.to_ascii_lowercase()));
+            result
+        })
+        .collect::<Vec<_>>()
+        .join("-")
+}
+
+pub(crate) fn cel_context(
+    request: &PolicyRequest<'_>,
+) -> Result<Context<'static, 'static>, cel::SerializationError> {
+    let mut context = Context::default();
+
+    context.add_variable(CEL_REMOTE_ADDRESS, request.remote_address.to_string())?;
+    context.add_variable(
+        CEL_CONTENT_LENGTH,
+        request
+            .content_length
+            .map(|length| i64::try_from(length).unwrap_or(i64::MAX))
+            .unwrap_or(0),
+    )?;
+    context.add_variable(CEL_USER_AGENT, request.user_agent.unwrap_or("").to_owned())?;
+    context.add_variable(CEL_HOST, request.host.unwrap_or("").to_owned())?;
+    context.add_variable(CEL_METHOD, request.method.to_owned())?;
+    context.add_variable(CEL_PATH, request.path.to_owned())?;
+    context.add_variable(CEL_QUERY, request.query.unwrap_or("").to_owned())?;
+    context.add_variable(CEL_HEADERS, cel_headers(request.headers))?;
+
+    Ok(context)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -428,6 +476,35 @@ impl std::error::Error for PolicyCompileError {
     }
 }
 
+#[derive(Debug)]
+pub enum PolicyMatchError {
+    Context(cel::SerializationError),
+    Evaluation(cel::ExecutionError),
+    NonBooleanExpression { rule: CompactString },
+}
+
+impl fmt::Display for PolicyMatchError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Context(source) => write!(f, "failed to build CEL context: {source}"),
+            Self::Evaluation(source) => write!(f, "failed to evaluate CEL expression: {source}"),
+            Self::NonBooleanExpression { rule } => {
+                write!(f, "rule {rule:?}: CEL expression must return a boolean")
+            }
+        }
+    }
+}
+
+impl std::error::Error for PolicyMatchError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Context(source) => Some(source),
+            Self::Evaluation(source) => Some(source),
+            Self::NonBooleanExpression { .. } => None,
+        }
+    }
+}
+
 // Tests, generated by the LLM intern.
 #[cfg(test)]
 mod tests {
@@ -575,39 +652,53 @@ mod tests {
         let empty_headers = empty_headers();
 
         let req = request("/api/users", None, &empty_headers, localhost());
-        assert!(c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(c.matches(&context, &req).unwrap());
 
         let req = request("/home", None, &empty_headers, localhost());
-        assert!(!c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(!c.matches(&context, &req).unwrap());
     }
 
     #[test]
-    fn matches_header_present_expression() {
-        let mut rule = rule("firefox-ai", Action::Weigh);
-        rule.expression = Some(Expression::Simple(r#""X-Firefox-Ai" in headers"#.into()));
+    fn matches_cel_expression() {
+        let mut rule = rule("api-client", Action::Allow);
+        rule.expression = Some(Expression::All {
+            all: vec![
+                r#"method == "GET""#.into(),
+                r#"path.startsWith("/api/")"#.into(),
+                r#"userAgent.contains("curl")"#.into(),
+                r#""Accept" in headers"#.into(),
+                r#"headers["Accept"] == "application/json""#.into(),
+            ],
+        });
 
         let compiled = CompiledRule::compile(&rule).unwrap();
 
         let mut headers = HeaderMap::new();
-        headers.insert("X-Firefox-Ai", "1".parse().unwrap());
+        headers.insert("Accept", "application/json".parse().unwrap());
 
-        let req = request("/", None, &headers, localhost());
-        assert!(compiled.matches(&req));
+        let request = PolicyRequest {
+            remote_address: localhost(),
+            content_length: None,
+            method: "GET",
+            path: "/api/status",
+            host: None,
+            query: None,
+            user_agent: Some("curl/8.0"),
+            headers: &headers,
+        };
 
-        let empty_headers = empty_headers();
-        let req = request("/", None, &empty_headers, localhost());
-        assert!(!compiled.matches(&req));
+        let context = cel_context(&request).unwrap();
+        assert!(compiled.matches(&context, &request).unwrap());
     }
 
     #[test]
-    fn rejects_unsupported_rule_expression() {
-        let mut rule = rule("unsupported", Action::Allow);
-        rule.expression = Some(Expression::Simple("method == 'POST'".into()));
+    fn compiles_standard_cel_expression() {
+        let mut rule = rule("post-only", Action::Allow);
+        rule.expression = Some(Expression::Simple(r#"method == "POST""#.into()));
 
-        assert!(matches!(
-            CompiledRule::compile(&rule),
-            Err(PolicyCompileError::UnsupportedRuleExpression { .. })
-        ));
+        assert!(CompiledRule::compile(&rule).is_ok());
     }
 
     #[test]
@@ -618,10 +709,12 @@ mod tests {
         let empty_headers = empty_headers();
 
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
-        assert!(c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(c.matches(&context, &req).unwrap());
 
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
-        assert!(!c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(!c.matches(&context, &req).unwrap());
     }
 
     #[test]
@@ -633,10 +726,12 @@ mod tests {
         let empty_headers = empty_headers();
 
         let req = request("/", None, &empty_headers, localhost());
-        assert!(c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(c.matches(&context, &req).unwrap());
 
         let req = request("/", None, &empty_headers, external_ip());
-        assert!(!c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(!c.matches(&context, &req).unwrap());
     }
 
     #[test]
@@ -649,10 +744,12 @@ mod tests {
 
         let empty_headers = empty_headers();
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
-        assert!(c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(c.matches(&context, &req).unwrap());
 
         let req = request("/", Some("curl/7"), &empty_headers, localhost());
-        assert!(!c.matches(&req));
+        let context = cel_context(&req).unwrap();
+        assert!(!c.matches(&context, &req).unwrap());
     }
 
     // ── WeightPredicate ──
@@ -704,7 +801,7 @@ mod tests {
         let req = request("/foo", None, &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Allow { .. }
+            Ok(PolicyEvaluation::Allow { .. })
         ));
     }
 
@@ -717,7 +814,7 @@ mod tests {
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Deny { .. }
+            Ok(PolicyEvaluation::Deny { .. })
         ));
     }
 
@@ -790,13 +887,13 @@ mod tests {
         );
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Challenge { .. }
+            Ok(PolicyEvaluation::Challenge { .. })
         ));
         // Only r1: weight = 10, not > 12 → DefaultChallenge
         let req = request("/home", Some("Mozilla/5.0"), &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::DefaultAllow
+            Ok(PolicyEvaluation::DefaultAllow)
         ));
     }
 
@@ -808,7 +905,7 @@ mod tests {
         let req = request("/", None, &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Allow { rule } if rule == "minimal-suspicion" // TODO mikel: const?
+            Ok(PolicyEvaluation::Allow { rule }) if rule == "minimal-suspicion" // TODO mikel: const?
         ));
     }
 
@@ -823,7 +920,7 @@ mod tests {
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Challenge { .. }
+            Ok(PolicyEvaluation::Challenge { .. })
         ));
     }
 
@@ -853,7 +950,7 @@ mod tests {
         let req = request("/", Some("Googlebot/2.1"), &empty_headers, localhost());
         assert!(matches!(
             engine.evaluate(&req),
-            PolicyEvaluation::Allow { .. }
+            Ok(PolicyEvaluation::Allow { .. })
         ));
     }
 }

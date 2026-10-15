@@ -1,6 +1,8 @@
 use compact_str::CompactString;
 
-use super::compile::{CompiledRule, CompiledThreshold, ThresholdLogic, WeightPredicate};
+use super::compile::{
+    CompiledRule, CompiledThreshold, PolicyMatchError, ThresholdLogic, WeightPredicate, cel_context,
+};
 use super::model::{Action, ChallengeRules, Rule, Weight};
 use super::request::PolicyRequest;
 
@@ -105,30 +107,31 @@ impl PolicyEngine {
         self.default_difficulty
     }
 
-    pub fn evaluate(&self, request: &PolicyRequest) -> PolicyEvaluation {
+    pub fn evaluate(&self, request: &PolicyRequest) -> Result<PolicyEvaluation, PolicyMatchError> {
+        let context = cel_context(request).map_err(PolicyMatchError::Context)?;
         let mut weight: i32 = 0;
 
         for rule in &self.rules {
-            if !rule.matches(request) {
+            if !rule.matches(&context, request)? {
                 continue;
             }
 
             match &rule.action {
                 Action::Allow => {
-                    return PolicyEvaluation::Allow {
+                    return Ok(PolicyEvaluation::Allow {
                         rule: rule.name.clone(),
-                    };
+                    });
                 }
                 Action::Deny => {
-                    return PolicyEvaluation::Deny {
+                    return Ok(PolicyEvaluation::Deny {
                         rule: rule.name.clone(),
-                    };
+                    });
                 }
                 Action::Challenge => {
-                    return PolicyEvaluation::Challenge {
+                    return Ok(PolicyEvaluation::Challenge {
                         rule: rule.name.clone(),
                         config: rule.challenge.clone(),
-                    };
+                    });
                 }
                 Action::DebugBenchmark => todo!("debug benchmark"),
                 Action::Weigh => {
@@ -144,20 +147,20 @@ impl PolicyEngine {
             }
 
             return match &threshold.action {
-                Action::Allow => PolicyEvaluation::Allow {
+                Action::Allow => Ok(PolicyEvaluation::Allow {
                     rule: threshold.name.clone(),
-                },
-                Action::Deny => PolicyEvaluation::Deny {
+                }),
+                Action::Deny => Ok(PolicyEvaluation::Deny {
                     rule: threshold.name.clone(),
-                },
-                Action::Challenge => PolicyEvaluation::Challenge {
+                }),
+                Action::Challenge => Ok(PolicyEvaluation::Challenge {
                     rule: threshold.name.clone(),
                     config: threshold.challenge.clone(),
-                },
+                }),
                 _ => continue,
             };
         }
 
-        PolicyEvaluation::DefaultAllow
+        Ok(PolicyEvaluation::DefaultAllow)
     }
 }

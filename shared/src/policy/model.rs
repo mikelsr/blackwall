@@ -8,15 +8,24 @@ use std::fmt;
 const CEL_AND: &str = " && ";
 const CEL_OR: &str = " || ";
 
+pub(crate) const CEL_REMOTE_ADDRESS: &str = "remoteAddress";
+pub(crate) const CEL_CONTENT_LENGTH: &str = "contentLength";
+pub(crate) const CEL_USER_AGENT: &str = "userAgent";
+pub(crate) const CEL_HOST: &str = "host";
+pub(crate) const CEL_METHOD: &str = "method";
+pub(crate) const CEL_PATH: &str = "path";
+pub(crate) const CEL_QUERY: &str = "query";
+pub(crate) const CEL_HEADERS: &str = "headers";
+
 const RULE_CEL_VARIABLES: &[&str] = &[
-    "remoteAddress",
-    "contentLength",
-    "userAgent",
-    "host",
-    "method",
-    "path",
-    "query",
-    "headers",
+    CEL_REMOTE_ADDRESS,
+    CEL_CONTENT_LENGTH,
+    CEL_USER_AGENT,
+    CEL_HOST,
+    CEL_METHOD,
+    CEL_PATH,
+    CEL_QUERY,
+    CEL_HEADERS,
     "load_1m",
     "load_5m",
     "load_15m",
