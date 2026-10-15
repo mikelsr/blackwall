@@ -6,8 +6,12 @@ use std::{
 
 use serde::Deserialize;
 
-use super::compile::*;
-use super::embed;
+use super::{
+    compile::*,
+    embed,
+    model::{Rule, Threshold},
+    runtime::PolicyEngine,
+};
 
 const YAML_IMPORT_PREFIX: &str = "(data)/";
 
@@ -187,7 +191,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn bundled_default_policy_loads() {
+    fn load_default_policy() {
         let yaml = embed::get("botPolicies.yaml").expect("bundled root policy must exist");
 
         let engine = load_policy_str(

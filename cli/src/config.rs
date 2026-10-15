@@ -6,7 +6,7 @@ use shared::config::{
     BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
     PathRewriteConfig, ProxyConfig, Target,
 };
-use shared::policy::compile::PolicyEngine;
+use shared::policy::PolicyEngine;
 
 pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
     let env_config = dotenvy::dotenv();

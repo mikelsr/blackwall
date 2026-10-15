@@ -24,7 +24,7 @@ use serde_json;
 use shared::challenge::verify_solution;
 use shared::{
     challenge::{COOKIE_NAME, Challenge, ChallengeRecord, Solution},
-    policy::compile::PolicyEvaluation,
+    policy::PolicyEvaluation,
     store::StoreError,
 };
 use std::collections::BTreeMap;

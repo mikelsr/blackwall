@@ -1,91 +1,119 @@
+use cel::{Context, Program, Value};
 use compact_str::CompactString;
 use http::{HeaderMap, HeaderName};
 use ipnet::IpNet;
 use regex::{self, Regex};
-use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::fmt;
 use std::net::IpAddr;
+
+use super::model::{Action, ChallengeRules, Expression, Rule, Threshold, Weight};
 
 const PATH_REGEX: &str = "path_regex";
 const USER_AGENT_REGEX: &str = "user_agent_regex";
 const HEADERS_REGEX: &str = "headers_regex";
-// The name is kept to keep behaviour as close as possible to the Anubis...
-const LEGACY_ANUBIS_NAME: &str = "legacy-anubis-behaviour";
-const DEFAULT_ALGORITHM: &str = "fast";
+const CEL_REMOTE_ADDRESS: &str = "remoteAddress";
+const CEL_CONTENT_LENGTH: &str = "contentLength";
+const CEL_USER_AGENT: &str = "userAgent";
+const CEL_HOST: &str = "host";
+const CEL_METHOD: &str = "method";
+const CEL_PATH: &str = "path";
+const CEL_QUERY: &str = "query";
+const CEL_HEADERS: &str = "headers";
+const CEL_LOAD_1M: &str = "load_1m";
+const CEL_LOAD_5M: &str = "load_5m";
+const CEL_LOAD_15M: &str = "load_15m";
 
-// Policy definitions.
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Action {
-    Allow,
-    Deny,
-    Challenge,
-    Weigh,
-    DebugBenchmark,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(default)]
-pub struct ChallengeRules {
-    pub algorithm: Option<String>,
-    pub difficulty: Option<u32>,
-    pub report_as: Option<u32>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Weight {
-    #[serde(default)]
-    pub adjust: i32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum Expression {
-    Simple(String),
-    All { all: Vec<String> },
-    Any { any: Vec<String> },
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct GeoIp {
-    #[serde(default)]
-    pub countries: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct Asns {
-    #[serde(default, rename = "match")]
-    pub matches: Vec<u32>,
-}
-
-/// Rule definition, for initialization.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Rule {
-    pub name: CompactString,
-    pub action: Action,
-    #[serde(default)]
-    pub user_agent_regex: Option<String>,
-    #[serde(default)]
-    pub path_regex: Option<String>,
-    #[serde(default)]
-    pub headers_regex: Option<BTreeMap<String, String>>,
-    #[serde(default, rename = "remote_addresses")]
-    pub remote_addresses: Option<Vec<String>>,
-    #[serde(default)]
-    pub expression: Option<Expression>,
-    #[serde(default)]
-    pub challenge: Option<ChallengeRules>,
-    #[serde(default)]
-    pub weight: Option<Weight>,
-    #[serde(default, rename = "geoip")]
-    pub geo_ip: Option<GeoIp>,
-    #[serde(default)]
-    pub asns: Option<Asns>,
-}
-
+const CEL_REMOTE_ADDRESS_DEFAULT: &str = "127.0.0.1";
+const CEL_CONTENT_LENGTH_DEFAULT: i64 = 0;
+const CEL_USER_AGENT_DEFAULT: &str = "Mozilla/5.0";
+const CEL_HOST_DEFAULT: &str = "example.test";
+const CEL_METHOD_DEFAULT: &str = "GET";
+const CEL_PATH_DEFAULT: &str = "/";
+const CEL_LOAD_1M_DEFAULT: f64 = 0.0;
+const CEL_LOAD_5M_DEFAULT: f64 = 0.0;
+const CEL_LOAD_15M_DEFAULT: f64 = 0.0;
 // Policy compilation.
+
+impl Expression {
+    pub(crate) fn validate_cel(&self) -> Result<(), CelValidationError> {
+        let source = self.as_cel();
+        let program = Program::compile(source.as_ref()).map_err(CelValidationError::Parse)?;
+        let mut context = Context::default();
+
+        context
+            .add_variable(CEL_REMOTE_ADDRESS, CEL_REMOTE_ADDRESS_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_CONTENT_LENGTH, CEL_CONTENT_LENGTH_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_USER_AGENT, CEL_USER_AGENT_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_HOST, CEL_HOST_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_METHOD, CEL_METHOD_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_PATH, CEL_PATH_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_QUERY, HashMap::<String, String>::new())
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_HEADERS, HashMap::<String, String>::new())
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_1M, CEL_LOAD_1M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_5M, CEL_LOAD_5M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+        context
+            .add_variable(CEL_LOAD_15M, CEL_LOAD_15M_DEFAULT)
+            .map_err(CelValidationError::Binding)?;
+
+        match program
+            .execute(&context)
+            .map_err(CelValidationError::Evaluation)?
+        {
+            Value::Bool(_) => Ok(()),
+            _ => Err(CelValidationError::NonBooleanResult),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum CelValidationError {
+    Parse(cel::ParseErrors),
+    Binding(cel::SerializationError),
+    Evaluation(cel::ExecutionError),
+    NonBooleanResult,
+}
+
+impl fmt::Display for CelValidationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse(source) => write!(f, "invalid CEL syntax: {source}"),
+            Self::Binding(source) => write!(f, "failed to bind CEL validation value: {source}"),
+            Self::Evaluation(source) => write!(f, "invalid CEL expression: {source}"),
+            Self::NonBooleanResult => write!(f, "CEL expression must return a boolean"),
+        }
+    }
+}
+
+impl std::error::Error for CelValidationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Parse(source) => Some(source),
+            Self::Binding(source) => Some(source),
+            Self::Evaluation(source) => Some(source),
+            Self::NonBooleanResult => None,
+        }
+    }
+}
 
 /// Rules kept at runtime and used for actual evaluation.
 #[derive(Debug)]
@@ -97,8 +125,8 @@ pub struct CompiledRule {
     headers_regex: Option<Vec<(CompactString, Regex)>>,
     expression: Option<CompiledRuleExpression>,
     remote_addresses: Option<Vec<IpNet>>,
-    challenge: Option<ChallengeRules>,
-    weight: Option<Weight>,
+    pub(crate) challenge: Option<ChallengeRules>,
+    pub(crate) weight: Option<Weight>,
 }
 
 impl CompiledRule {
@@ -137,7 +165,16 @@ impl CompiledRule {
         let expression = rule
             .expression
             .as_ref()
-            .map(|e| compile_rule_expr(e, &rule.name))
+            .map(|expression| {
+                expression.validate_cel().map_err(|source| {
+                    PolicyCompileError::InvalidCelExpression {
+                        name: rule.name.clone(),
+                        source,
+                    }
+                })?;
+
+                compile_rule_expr(expression, &rule.name)
+            })
             .transpose()?;
 
         let remote_addresses = rule
@@ -292,16 +329,6 @@ fn compile_rule_expr(
     Ok(CompiledRuleExpression::HasHeader(header_name))
 }
 
-#[derive(Debug, Deserialize)]
-pub(crate) struct Threshold {
-    name: CompactString,
-    expression: Expression,
-    action: Action,
-
-    #[serde(default)]
-    challenge: Option<ChallengeRules>,
-}
-
 #[derive(Debug, Clone, Copy)]
 pub enum ThresholdLogic {
     All,
@@ -405,171 +432,6 @@ fn parse_i32(s: &str) -> Result<i32, String> {
     s.trim().parse().map_err(|e| format!("invalid number: {e}"))
 }
 
-// Policy engine.
-#[derive(Debug)]
-pub struct PolicyEngine {
-    rules: Vec<CompiledRule>,
-    thresholds: Vec<CompiledThreshold>,
-    default_difficulty: u32,
-}
-
-pub enum PolicyEvaluation {
-    Allow {
-        rule: CompactString,
-    },
-    Deny {
-        rule: CompactString,
-    },
-    Challenge {
-        rule: CompactString,
-        config: Option<ChallengeRules>,
-    },
-    DefaultAllow,
-}
-
-impl PolicyEngine {
-    pub fn new(
-        rules: Vec<CompiledRule>,
-        thresholds: Vec<CompiledThreshold>,
-        default_difficulty: u32,
-    ) -> Self {
-        let thresholds = if thresholds.is_empty() {
-            vec![CompiledThreshold {
-                name: CompactString::from(LEGACY_ANUBIS_NAME),
-                logic: ThresholdLogic::All,
-                predicates: vec![WeightPredicate::Gt(0)],
-                action: Action::Challenge,
-                challenge: Some(ChallengeRules {
-                    algorithm: Some(DEFAULT_ALGORITHM.into()),
-                    difficulty: Some(default_difficulty),
-                    report_as: None,
-                }),
-            }]
-        } else {
-            thresholds
-        };
-        Self {
-            rules,
-            thresholds,
-            default_difficulty,
-        }
-    }
-
-    pub fn default(default_difficulty: u32) -> Self {
-        // TODO mikel: load from YAML
-        let browser_rule = CompiledRule::compile(&Rule {
-            name: "generic-browser".into(),
-            action: Action::Weigh,
-            user_agent_regex: Some("Mozilla|Opera".into()),
-            path_regex: None,
-            headers_regex: None,
-            remote_addresses: None,
-            expression: None,
-            challenge: None,
-            weight: Some(Weight { adjust: 10 }),
-            geo_ip: None,
-            asns: None,
-        })
-        .expect("built-in rule must compile");
-
-        let thresholds = vec![
-            CompiledThreshold {
-                name: "minimal-suspicion".into(),
-                logic: ThresholdLogic::All,
-                predicates: vec![WeightPredicate::Lte(0)],
-                action: Action::Allow,
-                challenge: None,
-            },
-            CompiledThreshold {
-                name: "moderate-suspicion".into(),
-                logic: ThresholdLogic::All,
-                predicates: vec![WeightPredicate::Gt(0)],
-                action: Action::Challenge,
-                challenge: Some(ChallengeRules {
-                    algorithm: Some("fast".into()),
-                    difficulty: Some(default_difficulty),
-                    report_as: None,
-                }),
-            },
-        ];
-
-        Self {
-            rules: vec![browser_rule],
-            thresholds,
-            default_difficulty,
-        }
-    }
-
-    pub fn default_difficulty(&self) -> u32 {
-        self.default_difficulty
-    }
-
-    pub fn evaluate(
-        &self,
-        path: &str,
-        user_agent: Option<&str>,
-        headers: &HeaderMap,
-        remote_ip: IpAddr,
-    ) -> PolicyEvaluation {
-        let mut weight: i32 = 0;
-
-        for rule in &self.rules {
-            if !rule.matches(path, user_agent, headers, remote_ip) {
-                continue;
-            }
-
-            match &rule.action {
-                Action::Allow => {
-                    return PolicyEvaluation::Allow {
-                        rule: rule.name.clone(),
-                    };
-                }
-                Action::Deny => {
-                    return PolicyEvaluation::Deny {
-                        rule: rule.name.clone(),
-                    };
-                }
-                Action::Challenge => {
-                    return PolicyEvaluation::Challenge {
-                        rule: rule.name.clone(),
-                        config: rule.challenge.clone(),
-                    };
-                }
-                Action::DebugBenchmark => {
-                    todo!("debug benchmark");
-                }
-                Action::Weigh => {
-                    let adjust = rule.weight.as_ref().map_or(5, |w| w.adjust);
-                    weight = weight.saturating_add(adjust);
-                }
-            }
-        }
-
-        for threshold in &self.thresholds {
-            if !threshold.matches(weight) {
-                continue;
-            }
-
-            // theshold evaluation cannot lead to weight or debug.
-            return match &threshold.action {
-                Action::Allow => PolicyEvaluation::Allow {
-                    rule: threshold.name.clone(),
-                },
-                Action::Deny => PolicyEvaluation::Deny {
-                    rule: threshold.name.clone(),
-                },
-                Action::Challenge => PolicyEvaluation::Challenge {
-                    rule: threshold.name.clone(),
-                    config: threshold.challenge.clone(),
-                },
-                _ => continue,
-            };
-        }
-
-        PolicyEvaluation::DefaultAllow
-    }
-}
-
 // Policy compilation errors.
 
 #[derive(Debug)]
@@ -581,6 +443,10 @@ pub enum PolicyCompileError {
         name: CompactString,
         value: String,
         source: ipnet::AddrParseError,
+    },
+    InvalidCelExpression {
+        name: CompactString,
+        source: CelValidationError,
     },
     InvalidRegex {
         name: CompactString,
@@ -619,6 +485,9 @@ impl fmt::Display for PolicyCompileError {
                 source,
             } => {
                 write!(f, "rule {name:?}: invalid CIDR {value:?}: {source}")
+            }
+            Self::InvalidCelExpression { name, source } => {
+                write!(f, "rule {name:?}: {source}")
             }
             Self::InvalidRegex {
                 name,
@@ -660,6 +529,7 @@ impl std::error::Error for PolicyCompileError {
         match self {
             Self::InvalidRegex { source, .. } => Some(source),
             Self::InvalidCidr { source, .. } => Some(source),
+            Self::InvalidCelExpression { source, .. } => Some(source),
             _ => None,
         }
     }
@@ -668,8 +538,12 @@ impl std::error::Error for PolicyCompileError {
 // Tests, generated by the LLM intern.
 #[cfg(test)]
 mod tests {
+    use super::super::model::{Asns, GeoIp};
+    use super::super::runtime::{PolicyEngine, PolicyEvaluation};
     use super::*;
+    use cel::{Context, Env};
     use std::net::Ipv4Addr;
+    use std::sync::Arc;
 
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
@@ -847,6 +721,83 @@ mod tests {
         assert!(!c.matches("/", Some("Mozilla/5.0"), &empty_headers(), external_ip()));
     }
 
+    // TODO mikel: remove after validation
+    #[test]
+    fn cel_evaluates_the_first_bundled_any_expression() {
+        let expression = Expression::Any {
+            any: vec![
+                r#"userAgent.contains("MSIE")"#.into(),
+                r#"userAgent.contains("Trident")"#.into(),
+                r#"userAgent.contains("Presto")"#.into(),
+                r#"userAgent.contains("Windows CE")"#.into(),
+                r#"userAgent.contains("Windows 95")"#.into(),
+                r#"userAgent.contains("Windows 98")"#.into(),
+                r#"userAgent.contains("Win 9x")"#.into(),
+                r#"userAgent.contains("Alexa Toolbar")"#.into(),
+                r#"userAgent.contains("Windows NT 11.0")"#.into(),
+                r#"userAgent.contains("iPod")"#.into(),
+            ],
+        };
+
+        let source = expression.as_cel();
+
+        assert_eq!(
+            source,
+            r#"(userAgent.contains("MSIE")) || (userAgent.contains("Trident")) || (userAgent.contains("Presto")) || (userAgent.contains("Windows CE")) || (userAgent.contains("Windows 95")) || (userAgent.contains("Windows 98")) || (userAgent.contains("Win 9x")) || (userAgent.contains("Alexa Toolbar")) || (userAgent.contains("Windows NT 11.0")) || (userAgent.contains("iPod"))"#
+        );
+
+        let env = Arc::new(Env::stdlib());
+        let program = env
+            .compile(source.as_ref())
+            .expect("bundled CEL expression must compile");
+
+        let mut matching_context = Context::with_env(Arc::clone(&env));
+        matching_context
+            .add_variable("userAgent", "Mozilla/5.0 (compatible; MSIE 10.0)")
+            .expect("userAgent must be a valid CEL value");
+
+        assert_eq!(
+            program
+                .execute(&matching_context)
+                .expect("bundled CEL expression must evaluate"),
+            true.into()
+        );
+
+        let mut non_matching_context = Context::with_env(env);
+        non_matching_context
+            .add_variable("userAgent", "Mozilla/5.0")
+            .expect("userAgent must be a valid CEL value");
+
+        assert_eq!(
+            program
+                .execute(&non_matching_context)
+                .expect("bundled CEL expression must evaluate"),
+            false.into()
+        );
+    }
+
+    // TODO mikel: remove after validation
+    #[test]
+    fn rule_cel_validation_accepts_known_rule_variables() {
+        let expression =
+            Expression::Simple(r#"userAgent.contains("Mozilla") && method == "GET""#.into());
+
+        expression
+            .validate_cel()
+            .expect("known rule variables and standard CEL methods must validate");
+    }
+
+    // TODO mikel: remove after validation
+    #[test]
+    fn rule_cel_validation_rejects_unknown_rule_variables() {
+        let expression = Expression::Simple(r#"misspelledUserAgent == "Mozilla/5.0""#.into());
+
+        assert!(matches!(
+            expression.validate_cel(),
+            Err(CelValidationError::Evaluation(_))
+        ));
+    }
+
     // ── WeightPredicate ──
 
     #[test]
@@ -906,6 +857,34 @@ mod tests {
             engine.evaluate("/", Some("BadBot/1.0"), &empty_headers(), localhost()),
             PolicyEvaluation::Deny { .. }
         ));
+    }
+
+    #[test]
+    fn expression_simple_keeps_its_source() {
+        let expression = Expression::Simple("weight >= 10".into());
+
+        assert_eq!(expression.as_cel(), "weight >= 10");
+    }
+
+    #[test]
+    fn expression_all_joins_with_and() {
+        let expression = Expression::All {
+            all: vec!["weight > 0".into(), "weight < 10".into()],
+        };
+
+        assert_eq!(expression.as_cel(), "(weight > 0) && (weight < 10)");
+    }
+
+    #[test]
+    fn expression_any_joins_with_or() {
+        let expression = Expression::Any {
+            any: vec!["method == 'GET'".into(), "method == 'HEAD'".into()],
+        };
+
+        assert_eq!(
+            expression.as_cel(),
+            "(method == 'GET') || (method == 'HEAD')"
+        );
     }
 
     #[test]
