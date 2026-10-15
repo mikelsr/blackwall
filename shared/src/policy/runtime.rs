@@ -1,9 +1,8 @@
 use compact_str::CompactString;
-use http::HeaderMap;
-use std::net::IpAddr;
 
 use super::compile::{CompiledRule, CompiledThreshold, ThresholdLogic, WeightPredicate};
 use super::model::{Action, ChallengeRules, Rule, Weight};
+use super::request::PolicyRequest;
 
 const LEGACY_ANUBIS_NAME: &str = "legacy-anubis-behaviour";
 const DEFAULT_ALGORITHM: &str = "fast";
@@ -106,17 +105,11 @@ impl PolicyEngine {
         self.default_difficulty
     }
 
-    pub fn evaluate(
-        &self,
-        path: &str,
-        user_agent: Option<&str>,
-        headers: &HeaderMap,
-        remote_ip: IpAddr,
-    ) -> PolicyEvaluation {
+    pub fn evaluate(&self, request: &PolicyRequest) -> PolicyEvaluation {
         let mut weight: i32 = 0;
 
         for rule in &self.rules {
-            if !rule.matches(path, user_agent, headers, remote_ip) {
+            if !rule.matches(request) {
                 continue;
             }
 

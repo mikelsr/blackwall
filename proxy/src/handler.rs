@@ -4,11 +4,13 @@ use crate::embed::{
 };
 use crate::{ClientAddr, ProxyState, headers::X_REAL_IP};
 use axum::extract::ConnectInfo;
-use axum::http::header::USER_AGENT;
 use axum::{
     body::Body,
     extract::{Query, State},
-    http::{HeaderMap, Request, StatusCode, header::HOST},
+    http::{
+        HeaderMap, Request, StatusCode,
+        header::{CONTENT_LENGTH, HOST, USER_AGENT},
+    },
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -24,7 +26,7 @@ use serde_json;
 use shared::challenge::verify_solution;
 use shared::{
     challenge::{COOKIE_NAME, Challenge, ChallengeRecord, Solution},
-    policy::PolicyEvaluation,
+    policy::{PolicyEvaluation, PolicyRequest},
     store::StoreError,
 };
 use std::collections::BTreeMap;
@@ -74,12 +76,30 @@ pub async fn challenge_middleware(
 ) -> Response {
     let request_uri = req.uri().to_string();
     let path = req.uri().path();
-    let user_agent = req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok());
-    let remote_ip = get_remote_ip(req.headers(), &addr);
-    let policy_evaluation =
-        state
-            .policy_engine
-            .evaluate(path, user_agent, req.headers(), remote_ip);
+    let headers = req.headers();
+    let remote_address = get_remote_ip(headers, &addr);
+    let content_length = headers
+        .get(CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    let user_agent = headers
+        .get(USER_AGENT)
+        .and_then(|value| value.to_str().ok());
+    let host = headers.get(HOST).and_then(|value| value.to_str().ok());
+    let method = req.method().as_str();
+    let query = req.uri().query();
+
+    let policy_request = PolicyRequest {
+        remote_address,
+        content_length,
+        method,
+        path,
+        query,
+        user_agent,
+        host,
+        headers,
+    };
+    let policy_evaluation = state.policy_engine.evaluate(&policy_request);
 
     match policy_evaluation {
         PolicyEvaluation::Allow { rule } => {
