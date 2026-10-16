@@ -1,16 +1,21 @@
+use cel::common::ast::{Expr, IdedExpr, LiteralValue};
 use cel::{Context, Program, Value};
 use compact_str::CompactString;
 use ipnet::IpNet;
 use regex::{self, Regex};
 use std::collections::HashMap;
 use std::fmt;
+use std::slice;
 
+use super::dns::DnsVerifier;
+use super::model::CEL_REMOTE_ADDRESS;
 use super::model::*;
 use super::request::PolicyRequest;
 
 const PATH_REGEX: &str = "path_regex";
 const USER_AGENT_REGEX: &str = "user_agent_regex";
 const HEADERS_REGEX: &str = "headers_regex";
+const VERIFY_FCRDNS: &str = "verifyFCrDNS";
 
 /// Rules kept at runtime and used for actual evaluation.
 #[derive(Debug)]
@@ -28,6 +33,26 @@ pub struct CompiledRule {
 
 impl CompiledRule {
     pub fn compile(rule: &Rule) -> Result<Self, PolicyCompileError> {
+        if rule.geo_ip.is_some() {
+            return Err(PolicyCompileError::UnsupportedThothMatcher {
+                name: rule.name.clone(),
+                matcher: "geoip",
+            });
+        }
+
+        if rule.asns.is_some() {
+            return Err(PolicyCompileError::UnsupportedThothMatcher {
+                name: rule.name.clone(),
+                matcher: "asns",
+            });
+        }
+
+        if rule.user_agent_regex.is_some() && rule.path_regex.is_some() {
+            return Err(PolicyCompileError::BothUserAgentAndPath {
+                name: rule.name.clone(),
+            });
+        }
+
         if rule.user_agent_regex.is_some() && rule.path_regex.is_some() {
             return Err(PolicyCompileError::BothUserAgentAndPath {
                 name: rule.name.clone(),
@@ -95,9 +120,7 @@ impl CompiledRule {
             || user_agent_regex.is_some()
             || headers_regex.is_some()
             || remote_addresses.is_some()
-            || expression.is_some()
-            || rule.geo_ip.is_some()
-            || rule.asns.is_some();
+            || expression.is_some(); // TODO mikel: Thoth
 
         if !has_matcher {
             return Err(PolicyCompileError::NoMatchers {
@@ -124,10 +147,11 @@ impl CompiledRule {
         })
     }
 
-    pub fn matches(
+    pub async fn matches(
         &self,
         context: &Context<'_, '_>,
         request: &PolicyRequest<'_>,
+        dns_verifier: &dyn DnsVerifier,
     ) -> Result<bool, PolicyMatchError> {
         if let Some(re) = &self.path_regex {
             if !re.is_match(request.path) {
@@ -146,26 +170,28 @@ impl CompiledRule {
                 let value = request
                     .headers
                     .get(name.as_str())
-                    .and_then(|v| v.to_str().ok())
+                    .and_then(|value| value.to_str().ok())
                     .unwrap_or("");
-                if !re.is_match(value) {
+
+                // Anubis seems to treat `.*` header patterns as a present and non-empty-header check (??).
+                let matches = if re.as_str() == ".*" {
+                    !value.is_empty()
+                } else {
+                    re.is_match(value)
+                };
+
+                if !matches {
                     return Ok(false);
                 }
             }
         }
 
-        if let Some(CompiledRuleExpression::Cel(program)) = &self.expression {
-            match program
-                .execute(context)
-                .map_err(PolicyMatchError::Evaluation)?
+        if let Some(expression) = &self.expression {
+            if !expression
+                .matches(context, request, dns_verifier, &self.name)
+                .await?
             {
-                Value::Bool(true) => {}
-                Value::Bool(false) => return Ok(false),
-                _ => {
-                    return Err(PolicyMatchError::NonBooleanExpression {
-                        rule: self.name.clone(),
-                    });
-                }
+                return Ok(false);
             }
         }
 
@@ -181,7 +207,78 @@ impl CompiledRule {
 
 #[derive(Debug)]
 enum CompiledRuleExpression {
+    All(Vec<CompiledRulePredicate>),
+    Any(Vec<CompiledRulePredicate>),
+}
+
+impl CompiledRuleExpression {
+    async fn matches(
+        &self,
+        context: &Context<'_, '_>,
+        request: &PolicyRequest<'_>,
+        dns_verifier: &dyn DnsVerifier,
+        rule_name: &CompactString,
+    ) -> Result<bool, PolicyMatchError> {
+        match self {
+            Self::All(predicates) => {
+                for predicate in predicates {
+                    if !predicate
+                        .matches(context, request, dns_verifier, rule_name)
+                        .await?
+                    {
+                        return Ok(false);
+                    }
+                }
+
+                Ok(true)
+            }
+
+            Self::Any(predicates) => {
+                for predicate in predicates {
+                    if predicate
+                        .matches(context, request, dns_verifier, rule_name)
+                        .await?
+                    {
+                        return Ok(true);
+                    }
+                }
+
+                Ok(false)
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum CompiledRulePredicate {
     Cel(Program),
+    VerifyFCrDns { hostname_pattern: Regex },
+}
+
+impl CompiledRulePredicate {
+    async fn matches(
+        &self,
+        context: &Context<'_, '_>,
+        request: &PolicyRequest<'_>,
+        dns_verifier: &dyn DnsVerifier,
+        rule_name: &CompactString,
+    ) -> Result<bool, PolicyMatchError> {
+        match self {
+            Self::Cel(program) => match program
+                .execute(context)
+                .map_err(PolicyMatchError::Evaluation)?
+            {
+                Value::Bool(result) => Ok(result),
+                _ => Err(PolicyMatchError::NonBooleanExpression {
+                    rule: rule_name.clone(),
+                }),
+            },
+
+            Self::VerifyFCrDns { hostname_pattern } => Ok(dns_verifier
+                .verify_fcrdns(request.remote_address, hostname_pattern)
+                .await),
+        }
+    }
 }
 
 fn compile_regex(
@@ -207,16 +304,78 @@ fn compile_rule_expr(
     expression: &Expression,
     rule_name: &CompactString,
 ) -> Result<CompiledRuleExpression, PolicyCompileError> {
-    let source = expression.as_cel();
+    let (is_all, expressions) = match expression {
+        Expression::Simple(expr) => (true, slice::from_ref(expr)),
+        Expression::All { all } => (true, all.as_slice()),
+        Expression::Any { any } => (false, any.as_slice()),
+    };
 
-    let program = Program::compile(source.as_ref()).map_err(|source| {
-        PolicyCompileError::InvalidCelExpression {
+    let predicates = expressions
+        .iter()
+        .map(|expr| compile_rule_predicate(expr, rule_name))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(if is_all {
+        CompiledRuleExpression::All(predicates)
+    } else {
+        CompiledRuleExpression::Any(predicates)
+    })
+}
+
+fn compile_rule_predicate(
+    source: &str,
+    rule_name: &CompactString,
+) -> Result<CompiledRulePredicate, PolicyCompileError> {
+    let program =
+        Program::compile(source).map_err(|source| PolicyCompileError::InvalidCelExpression {
             name: rule_name.clone(),
             source: CelValidationError::Parse(source),
-        }
-    })?;
+        })?;
 
-    Ok(CompiledRuleExpression::Cel(program))
+    if !program.references().has_function(VERIFY_FCRDNS) {
+        return Ok(CompiledRulePredicate::Cel(program));
+    }
+
+    let hostname_pattern = compile_fcrdns_pattern(program.expression(), source, rule_name)?;
+
+    Ok(CompiledRulePredicate::VerifyFCrDns { hostname_pattern })
+}
+
+fn compile_fcrdns_pattern(
+    expression: &IdedExpr,
+    source: &str,
+    rule_name: &CompactString,
+) -> Result<Regex, PolicyCompileError> {
+    let unsupported = || PolicyCompileError::UnsupportedRuleExpression {
+        name: rule_name.clone(),
+        expression: source.to_owned(),
+    };
+
+    let Expr::Call(call) = &expression.expr else {
+        return Err(unsupported());
+    };
+
+    if call.func_name != VERIFY_FCRDNS || call.target.is_some() {
+        return Err(unsupported());
+    }
+
+    let [address, pattern] = call.args.as_slice() else {
+        return Err(unsupported());
+    };
+
+    if !matches!(&address.expr, Expr::Ident(name) if name == CEL_REMOTE_ADDRESS) {
+        return Err(unsupported());
+    }
+
+    let Expr::Literal(LiteralValue::String(pattern)) = &pattern.expr else {
+        return Err(unsupported());
+    };
+
+    Regex::new(pattern.inner()).map_err(|source| PolicyCompileError::InvalidRegex {
+        name: rule_name.clone(),
+        field: "verifyFCrDNS hostname pattern",
+        source,
+    })
 }
 
 fn cel_headers(headers: &http::HeaderMap) -> HashMap<String, String> {
@@ -228,6 +387,49 @@ fn cel_headers(headers: &http::HeaderMap) -> HashMap<String, String> {
             Some((canonical_header_name(name.as_str()), value.to_owned()))
         })
         .collect()
+}
+
+fn cel_query(query: Option<&str>) -> HashMap<String, String> {
+    let mut result = HashMap::new();
+
+    for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
+        let key = key.into_owned();
+        let value = value.into_owned();
+
+        result
+            .entry(key)
+            .and_modify(|existing: &mut String| {
+                existing.push(',');
+                existing.push_str(&value);
+            })
+            .or_insert(value);
+    }
+
+    result
+}
+
+pub(crate) fn cel_context(
+    request: &PolicyRequest<'_>,
+) -> Result<Context<'static, 'static>, cel::SerializationError> {
+    let mut context = Context::default();
+    let query = cel_query(request.query);
+
+    context.add_variable(CEL_REMOTE_ADDRESS, request.remote_address.to_string())?;
+    context.add_variable(
+        CEL_CONTENT_LENGTH,
+        request
+            .content_length
+            .map(|length| i64::try_from(length).unwrap_or(i64::MAX))
+            .unwrap_or(0),
+    )?;
+    context.add_variable(CEL_USER_AGENT, request.user_agent.unwrap_or("").to_owned())?;
+    context.add_variable(CEL_HOST, request.host.unwrap_or("").to_owned())?;
+    context.add_variable(CEL_METHOD, request.method.to_owned())?;
+    context.add_variable(CEL_PATH, request.path.to_owned())?;
+    context.add_variable(CEL_QUERY, query)?;
+    context.add_variable(CEL_HEADERS, cel_headers(request.headers))?;
+
+    Ok(context)
 }
 
 fn canonical_header_name(name: &str) -> String {
@@ -245,29 +447,6 @@ fn canonical_header_name(name: &str) -> String {
         })
         .collect::<Vec<_>>()
         .join("-")
-}
-
-pub(crate) fn cel_context(
-    request: &PolicyRequest<'_>,
-) -> Result<Context<'static, 'static>, cel::SerializationError> {
-    let mut context = Context::default();
-
-    context.add_variable(CEL_REMOTE_ADDRESS, request.remote_address.to_string())?;
-    context.add_variable(
-        CEL_CONTENT_LENGTH,
-        request
-            .content_length
-            .map(|length| i64::try_from(length).unwrap_or(i64::MAX))
-            .unwrap_or(0),
-    )?;
-    context.add_variable(CEL_USER_AGENT, request.user_agent.unwrap_or("").to_owned())?;
-    context.add_variable(CEL_HOST, request.host.unwrap_or("").to_owned())?;
-    context.add_variable(CEL_METHOD, request.method.to_owned())?;
-    context.add_variable(CEL_PATH, request.path.to_owned())?;
-    context.add_variable(CEL_QUERY, request.query.unwrap_or("").to_owned())?;
-    context.add_variable(CEL_HEADERS, cel_headers(request.headers))?;
-
-    Ok(context)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -409,6 +588,11 @@ pub enum PolicyCompileError {
         name: CompactString,
         expression: String,
     },
+    UnsupportedThothMatcher {
+        // TODO mikel: Thoth
+        name: CompactString,
+        matcher: &'static str,
+    },
 }
 
 impl fmt::Display for PolicyCompileError {
@@ -461,6 +645,12 @@ impl fmt::Display for PolicyCompileError {
                     "rule {name:?}: unsupported rule expression: {expression}"
                 )
             }
+            Self::UnsupportedThothMatcher { name, matcher } => {
+                write!(
+                    f,
+                    "rule {name:?}: matcher {matcher:?} requires unsupported Thoth metadata which is not currently supported"
+                )
+            }
         }
     }
 }
@@ -507,18 +697,20 @@ impl std::error::Error for PolicyMatchError {
 
 // Tests, generated by the LLM intern.
 #[cfg(test)]
-mod tests {
+pub(crate) mod compile_tests {
 
-    use super::super::model::{Asns, GeoIp};
     use super::super::runtime::{PolicyEngine, PolicyEvaluation};
     use super::*;
     use http::header::HeaderMap;
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::{
+        collections::BTreeMap,
+        net::{IpAddr, Ipv4Addr},
+    };
 
     fn localhost() -> IpAddr {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     }
-    fn external_ip() -> IpAddr {
+    pub(crate) fn external_ip() -> IpAddr {
         IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))
     }
     fn empty_headers() -> HeaderMap {
@@ -541,7 +733,7 @@ mod tests {
         }
     }
 
-    fn request<'a>(
+    pub(crate) fn request<'a>(
         path: &'a str,
         user_agent: Option<&'a str>,
         headers: &'a HeaderMap,
@@ -556,6 +748,17 @@ mod tests {
             path,
             query: None,
             headers,
+        }
+    }
+
+    struct StubDnsVerifier {
+        result: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl DnsVerifier for StubDnsVerifier {
+        async fn verify_fcrdns(&self, _address: IpAddr, _hostname_pattern: &Regex) -> bool {
+            self.result
         }
     }
 
@@ -625,43 +828,45 @@ mod tests {
         r.expression = Some(Expression::Simple(r#""X-Firefox-Ai" in headers"#.into()));
         assert!(CompiledRule::compile(&r).is_ok());
     }
+    //
+    //     #[test]
+    //     fn compile_accepts_geoip_as_sole_matcher() {
+    //         let mut r = rule("geo", Action::Weigh);
+    //         r.geo_ip = Some(GeoIp {
+    //             countries: vec!["BR".into()],
+    //         });
+    //         assert!(CompiledRule::compile(&r).is_ok());
+    //     }
+    //
+    //     #[test]
+    //     fn compile_accepts_asns_as_sole_matcher() {
+    //         let mut r = rule("asn", Action::Weigh);
+    //         r.asns = Some(Asns {
+    //             matches: vec![13335],
+    //         });
+    //         assert!(CompiledRule::compile(&r).is_ok());
+    //     }
 
-    #[test]
-    fn compile_accepts_geoip_as_sole_matcher() {
-        let mut r = rule("geo", Action::Weigh);
-        r.geo_ip = Some(GeoIp {
-            countries: vec!["BR".into()],
-        });
-        assert!(CompiledRule::compile(&r).is_ok());
-    }
-
-    #[test]
-    fn compile_accepts_asns_as_sole_matcher() {
-        let mut r = rule("asn", Action::Weigh);
-        r.asns = Some(Asns {
-            matches: vec![13335],
-        });
-        assert!(CompiledRule::compile(&r).is_ok());
-    }
-
-    #[test]
-    fn matches_path_regex() {
+    #[tokio::test]
+    async fn matches_path_regex() {
         let mut r = rule("p", Action::Allow);
         r.path_regex = Some("^/api/".into());
         let c = CompiledRule::compile(&r).unwrap();
         let empty_headers = empty_headers();
 
+        let dns_verifier = StubDnsVerifier { result: false };
+
         let req = request("/api/users", None, &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(c.matches(&context, &req).unwrap());
+        assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/home", None, &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(!c.matches(&context, &req).unwrap());
+        assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
-    #[test]
-    fn matches_cel_expression() {
+    #[tokio::test]
+    async fn matches_cel_expression() {
         let mut rule = rule("api-client", Action::Allow);
         rule.expression = Some(Expression::All {
             all: vec![
@@ -690,7 +895,13 @@ mod tests {
         };
 
         let context = cel_context(&request).unwrap();
-        assert!(compiled.matches(&context, &request).unwrap());
+        let dns_verifier = StubDnsVerifier { result: false };
+        assert!(
+            compiled
+                .matches(&context, &request, &dns_verifier)
+                .await
+                .unwrap()
+        );
     }
 
     #[test]
@@ -701,41 +912,44 @@ mod tests {
         assert!(CompiledRule::compile(&rule).is_ok());
     }
 
-    #[test]
-    fn matches_user_agent() {
+    #[tokio::test]
+    async fn matches_user_agent() {
         let mut r = rule("ua", Action::Deny);
         r.user_agent_regex = Some("BadBot".into());
         let c = CompiledRule::compile(&r).unwrap();
         let empty_headers = empty_headers();
 
+        let dns_verifier = StubDnsVerifier { result: false };
+
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(c.matches(&context, &req).unwrap());
+        assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(!c.matches(&context, &req).unwrap());
+        assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
-    #[test]
-    fn matches_cidr() {
+    #[tokio::test]
+    async fn matches_cidr() {
         let mut r = rule("local", Action::Allow);
         r.remote_addresses = Some(vec!["127.0.0.0/8".into()]);
         let c = CompiledRule::compile(&r).unwrap();
 
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
 
         let req = request("/", None, &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(c.matches(&context, &req).unwrap());
+        assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", None, &empty_headers, external_ip());
         let context = cel_context(&req).unwrap();
-        assert!(!c.matches(&context, &req).unwrap());
+        assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
-    #[test]
-    fn matches_requires_all_matchers_and() {
+    #[tokio::test]
+    async fn matches_requires_all_matchers_and() {
         let mut r = rule("both", Action::Allow);
         // Can't use both ua + path, so use ua + remote_addresses
         r.user_agent_regex = Some("Mozilla".into());
@@ -743,47 +957,48 @@ mod tests {
         let c = CompiledRule::compile(&r).unwrap();
 
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(c.matches(&context, &req).unwrap());
+        assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", Some("curl/7"), &empty_headers, localhost());
         let context = cel_context(&req).unwrap();
-        assert!(!c.matches(&context, &req).unwrap());
+        assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
     // ── WeightPredicate ──
 
-    #[test]
-    fn predicate_gt() {
+    #[tokio::test]
+    async fn predicate_gt() {
         let p = WeightPredicate::parse("weight > 0").unwrap();
         assert!(!p.evaluate(0));
         assert!(p.evaluate(1));
     }
 
-    #[test]
-    fn predicate_gte() {
+    #[tokio::test]
+    async fn predicate_gte() {
         let p = WeightPredicate::parse("weight >= 0").unwrap();
         assert!(p.evaluate(0));
         assert!(!p.evaluate(-1));
     }
 
-    #[test]
-    fn predicate_lt() {
+    #[tokio::test]
+    async fn predicate_lt() {
         let p = WeightPredicate::parse("weight < 5").unwrap();
         assert!(p.evaluate(4));
         assert!(!p.evaluate(5));
     }
 
-    #[test]
-    fn predicate_eq() {
+    #[tokio::test]
+    async fn predicate_eq() {
         let p = WeightPredicate::parse("weight == 10").unwrap();
         assert!(p.evaluate(10));
         assert!(!p.evaluate(11));
     }
 
-    #[test]
-    fn predicate_rejects_bad_input() {
+    #[tokio::test]
+    async fn predicate_rejects_bad_input() {
         assert!(WeightPredicate::parse("foo > 0").is_err());
         assert!(WeightPredicate::parse("weight ~ 0").is_err());
         assert!(WeightPredicate::parse("weight > abc").is_err());
@@ -791,29 +1006,31 @@ mod tests {
 
     // ── PolicyEngine ──
 
-    #[test]
-    fn allow_short_circuits() {
+    #[tokio::test]
+    async fn allow_short_circuits() {
         let mut r = rule("allow-all", Action::Allow);
         r.path_regex = Some(".*".into());
         let engine = PolicyEngine::new(vec![CompiledRule::compile(&r).unwrap()], vec![], 4);
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
 
         let req = request("/foo", None, &empty_headers, localhost());
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Allow { .. })
         ));
     }
 
-    #[test]
-    fn deny_short_circuits() {
+    #[tokio::test]
+    async fn deny_short_circuits() {
         let mut r = rule("deny-bots", Action::Deny);
         r.user_agent_regex = Some("BadBot".into());
         let engine = PolicyEngine::new(vec![CompiledRule::compile(&r).unwrap()], vec![], 4);
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Deny { .. })
         ));
     }
@@ -846,8 +1063,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn weigh_accumulates_then_threshold_fires() {
+    #[tokio::test]
+    async fn weigh_accumulates_then_threshold_fires() {
         let mut r1 = rule("browser", Action::Weigh);
         r1.user_agent_regex = Some("Mozilla".into());
         r1.weight = Some(Weight { adjust: 10 });
@@ -877,8 +1094,10 @@ mod tests {
             4,
         );
 
-        // Both match: weight = 15 > 12 → Challenge
+        let dns_verifier = StubDnsVerifier { result: false };
         let empty_headers = empty_headers();
+
+        // Both match: weight = 15 > 12 → Challenge
         let req = request(
             "/api/data",
             Some("Mozilla/5.0"),
@@ -886,46 +1105,35 @@ mod tests {
             localhost(),
         );
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Challenge { .. })
         ));
         // Only r1: weight = 10, not > 12 → DefaultChallenge
         let req = request("/home", Some("Mozilla/5.0"), &empty_headers, localhost());
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::DefaultAllow)
         ));
     }
 
-    #[test]
-    fn default_policy_allows_zero_weight_requests() {
-        let engine = PolicyEngine::default(4);
-
-        let empty_headers = empty_headers();
-        let req = request("/", None, &empty_headers, localhost());
-        assert!(matches!(
-            engine.evaluate(&req),
-            Ok(PolicyEvaluation::Allow { rule }) if rule == "minimal-suspicion" // TODO mikel: const?
-        ));
-    }
-
-    #[test]
-    fn empty_thresholds_get_legacy_default() {
+    #[tokio::test]
+    async fn empty_thresholds_get_legacy_default() {
         let mut r = rule("browser", Action::Weigh);
         r.user_agent_regex = Some("Mozilla".into());
         r.weight = Some(Weight { adjust: 1 });
         let engine = PolicyEngine::new(vec![CompiledRule::compile(&r).unwrap()], vec![], 4);
         // weight=1 > 0 → legacy threshold fires
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Challenge { .. })
         ));
     }
 
-    #[test]
-    fn allow_before_weigh_short_circuits() {
+    #[tokio::test]
+    async fn allow_before_weigh_short_circuits() {
         let mut allow = rule("search-engine", Action::Allow);
         allow.user_agent_regex = Some("Googlebot".into());
         let mut weigh = rule("generic", Action::Weigh);
@@ -947,10 +1155,44 @@ mod tests {
             4,
         );
         let empty_headers = empty_headers();
+        let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("Googlebot/2.1"), &empty_headers, localhost());
         assert!(matches!(
-            engine.evaluate(&req),
+            engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Allow { .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn header_dot_star_requires_a_nonempty_header() {
+        let mut rule = rule("cloudflare-worker", Action::Weigh);
+        rule.headers_regex = Some(BTreeMap::from([("CF-Worker".to_owned(), ".*".to_owned())]));
+
+        let compiled = CompiledRule::compile(&rule).unwrap();
+        let dns_verifier = StubDnsVerifier { result: false };
+
+        let missing_headers = HeaderMap::new();
+        let req = request("/", Some("Mozilla/5.0"), &missing_headers, external_ip());
+        let context = cel_context(&req).unwrap();
+
+        assert!(
+            !compiled
+                .matches(&context, &req, &dns_verifier)
+                .await
+                .unwrap()
+        );
+
+        let mut present_headers = HeaderMap::new();
+        present_headers.insert("CF-Worker", "worker-name".parse().unwrap());
+
+        let req = request("/", Some("Mozilla/5.0"), &present_headers, external_ip());
+        let context = cel_context(&req).unwrap();
+
+        assert!(
+            compiled
+                .matches(&context, &req, &dns_verifier)
+                .await
+                .unwrap()
+        );
     }
 }

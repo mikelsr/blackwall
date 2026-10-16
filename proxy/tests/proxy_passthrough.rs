@@ -43,7 +43,7 @@ impl TestHarness {
             ..proxy_config
         };
 
-        let policy_engine = PolicyEngine::default(config.challenge.difficulty);
+        let policy_engine = PolicyEngine::new(Vec::new(), Vec::new(), config.challenge.difficulty);
 
         let app = proxy::build_router(
             proxy::RuntimeMode::new(config, policy_engine).unwrap(),

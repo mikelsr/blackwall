@@ -100,10 +100,14 @@ pub async fn challenge_middleware(
         headers,
     };
 
-    let policy_evaluation = match state.policy_engine.evaluate(&policy_request) {
+    let policy_evaluation = match state
+        .policy_engine
+        .evaluate(&policy_request, state.dns_verifier.as_ref())
+        .await
+    {
         Ok(evaluation) => evaluation,
         Err(error) => {
-            warn!(%error, "policy evaluation failed");
+            warn!(%error, "policy evaluation failed"); // TODO mikel: actual tracing
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
     };

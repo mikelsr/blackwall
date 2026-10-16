@@ -3,6 +3,7 @@ use compact_str::CompactString;
 use super::compile::{
     CompiledRule, CompiledThreshold, PolicyMatchError, ThresholdLogic, WeightPredicate, cel_context,
 };
+use super::dns::DnsVerifier;
 use super::model::{Action, ChallengeRules, Rule, Weight};
 use super::request::PolicyRequest;
 
@@ -107,12 +108,16 @@ impl PolicyEngine {
         self.default_difficulty
     }
 
-    pub fn evaluate(&self, request: &PolicyRequest) -> Result<PolicyEvaluation, PolicyMatchError> {
+    pub async fn evaluate(
+        &self,
+        request: &PolicyRequest<'_>,
+        dns_verifier: &dyn DnsVerifier,
+    ) -> Result<PolicyEvaluation, PolicyMatchError> {
         let context = cel_context(request).map_err(PolicyMatchError::Context)?;
-        let mut weight: i32 = 0;
+        let mut weight = 0_i32;
 
         for rule in &self.rules {
-            if !rule.matches(&context, request)? {
+            if !rule.matches(&context, request, dns_verifier).await? {
                 continue;
             }
 
@@ -145,7 +150,6 @@ impl PolicyEngine {
             if !threshold.matches(weight) {
                 continue;
             }
-
             return match &threshold.action {
                 Action::Allow => Ok(PolicyEvaluation::Allow {
                     rule: threshold.name.clone(),

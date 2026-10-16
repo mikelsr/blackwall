@@ -10,7 +10,10 @@ use client::ClientAddr;
 use shared::{
     challenge::{ChallengeRepository, memory::MemoryChallengeRepository},
     config::{ChallengeConfig, proxy::ForwardedHeadersConfig},
-    policy::PolicyEngine,
+    policy::{
+        PolicyEngine,
+        dns::{DnsVerificationError, DnsVerifier, HickoryDnsVerifier},
+    },
 };
 use tower_http::trace::TraceLayer;
 
@@ -46,6 +49,7 @@ pub struct ProxyState {
     client: HttpsClient,
     challenge_service: ChallengeService,
     policy_engine: PolicyEngine,
+    dns_verifier: Box<dyn DnsVerifier>,
 }
 
 pub struct ChallengeService {
@@ -152,6 +156,11 @@ impl RuntimeMode {
 
         let client = build_client(insecure_skip_verify, disable_keepalive);
         let challenge_service = build_challenge_service(challenge_config);
+
+        let dns_verifier = Box::new(
+            HickoryDnsVerifier::new().map_err(|source| ProxyInitError::DnsError { source })?,
+        );
+
         Ok(RuntimeMode::Proxy(Box::new(ProxyState {
             target_scheme: scheme,
             target_authority: authority,
@@ -161,6 +170,7 @@ impl RuntimeMode {
             client,
             challenge_service,
             policy_engine,
+            dns_verifier,
         })))
     }
 }
@@ -359,6 +369,9 @@ fn build_client(insecure_skip_verify: bool, disable_keepalive: bool) -> HttpsCli
 // I've opted for failing fast and not allowing those states, at least for now.
 #[derive(Debug)]
 pub enum ProxyInitError {
+    DnsError {
+        source: DnsVerificationError,
+    },
     InvalidTargetAuthority {
         value: String,
     },
@@ -375,6 +388,9 @@ pub enum ProxyInitError {
 impl Display for ProxyInitError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
+            Self::DnsError { source } => {
+                write!(f, "failed to initialize DNS resolver: {source}")
+            }
             ProxyInitError::InvalidTargetAuthority { value } => {
                 write!(f, "invalid target authority {:?}", value)
             }
@@ -391,7 +407,8 @@ impl Display for ProxyInitError {
 impl Error for ProxyInitError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            ProxyInitError::InvalidTargetHost { source, .. } => Some(source),
+            Self::DnsError { source } => Some(source),
+            Self::InvalidTargetHost { source, .. } => Some(source),
             _ => None,
         }
     }

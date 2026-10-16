@@ -13,6 +13,7 @@ use super::{
     runtime::PolicyEngine,
 };
 
+const DEFAULT_POLICY: &str = "botPolicies.yaml";
 const YAML_IMPORT_PREFIX: &str = "(data)/";
 
 #[derive(Debug, Deserialize)]
@@ -29,6 +30,18 @@ pub struct PolicyFile {
 enum BotEntry {
     Import { import: String },
     Rule(Rule),
+}
+
+pub fn default(default_difficulty: u32) -> Result<PolicyEngine, PolicyLoadError> {
+    let yaml = embed::get(DEFAULT_POLICY).ok_or_else(|| PolicyLoadError::EmbeddedFileMissing {
+        file: DEFAULT_POLICY.to_owned(),
+    })?;
+
+    load_policy_str(
+        yaml,
+        PolicySource::Embedded(DEFAULT_POLICY.to_owned()),
+        default_difficulty,
+    )
 }
 
 pub fn load_policy_file(
@@ -81,13 +94,35 @@ fn expand_bot_entries(
                 let entries = load_import_entries(&import)?;
                 expand_bot_entries(entries, rules)?;
             }
+
             BotEntry::Rule(rule) => {
-                let compiled = CompiledRule::compile(&rule)
-                    .map_err(|err| PolicyLoadError::CompilationError { err })?;
-                rules.push(compiled);
+                // if rule.geo_ip.is_some() || rule.asns.is_some() {
+                //     tracing::warn!(
+                //         rule = %rule.name,
+                //         "skipping policy rule that requires unsupported Thoth metadata which is not currently supported"
+                //     );
+                //     continue;
+                // }
+
+                match CompiledRule::compile(&rule) {
+                    Ok(compiled) => rules.push(compiled),
+
+                    Err(PolicyCompileError::UnsupportedThothMatcher { name, matcher }) => {
+                        tracing::warn!(
+                            rule = %name,
+                            matcher = %matcher,
+                            "skipping policy rule that requires unsupported Thoth metadata"
+                        );
+                    }
+
+                    Err(err) => {
+                        return Err(PolicyLoadError::CompilationError { err });
+                    }
+                }
             }
         }
     }
+
     Ok(())
 }
 
@@ -190,17 +225,117 @@ impl std::error::Error for PolicyLoadError {
 mod tests {
     use super::*;
 
+    use async_trait::async_trait;
+    use http::HeaderMap;
+    use regex::Regex;
+    use std::{
+        net::IpAddr,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
+
+    use crate::policy::compile::compile_tests::{external_ip, request};
+    use crate::policy::{PolicyEvaluation, dns::DnsVerifier};
+
+    struct StubDnsVerifier {
+        hostname: Option<&'static str>,
+        calls: AtomicUsize,
+    }
+
+    impl StubDnsVerifier {
+        fn new(hostname: Option<&'static str>) -> Self {
+            Self {
+                hostname,
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait]
+    impl DnsVerifier for StubDnsVerifier {
+        async fn verify_fcrdns(&self, _address: IpAddr, hostname_pattern: &Regex) -> bool {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+
+            self.hostname
+                .is_some_and(|hostname| hostname_pattern.is_match(hostname))
+        }
+    }
+
     #[test]
     fn load_default_policy() {
-        let yaml = embed::get("botPolicies.yaml").expect("bundled root policy must exist");
-
-        let engine = load_policy_str(
-            yaml,
-            PolicySource::Embedded("botPolicies.yaml".to_owned()),
-            4,
-        )
-        .expect("bundled default policy must load");
+        let engine = default(4).expect("bundled default policy must load");
 
         assert_eq!(engine.default_difficulty(), 4);
+    }
+
+    #[tokio::test]
+    async fn bundled_yandex_rule_requires_matching_fcrdns() {
+        let engine = default(4).expect("bundled default policy must load");
+        let headers = HeaderMap::new();
+        let req = request(
+            "/",
+            Some(
+                "Mozilla/5.0 (compatible; YandexBot/3.0; \
+                 +http://yandex.com/bots)",
+            ),
+            &headers,
+            external_ip(),
+        );
+
+        let matching_dns = StubDnsVerifier::new(Some("crawler.yandex.com"));
+
+        let evaluation = engine
+            .evaluate(&req, &matching_dns)
+            .await
+            .expect("policy evaluation must succeed");
+
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Allow { rule } if rule == "yandexbot"
+        ));
+        assert_eq!(matching_dns.calls(), 1);
+
+        let nonmatching_dns = StubDnsVerifier::new(Some("crawler.example.com"));
+
+        let evaluation = engine
+            .evaluate(&req, &nonmatching_dns)
+            .await
+            .expect("policy evaluation must succeed");
+
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Challenge { rule, .. }
+                if rule == "moderate-suspicion"
+        ));
+        assert_eq!(nonmatching_dns.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn bundled_policy_skips_dns_when_user_agent_does_not_match() {
+        let engine = default(4).expect("bundled default policy must load");
+        let headers = HeaderMap::new();
+        let req = request("/", Some("Mozilla/5.0"), &headers, external_ip());
+
+        let dns = StubDnsVerifier::new(Some("crawler.yandex.com"));
+
+        let evaluation = engine
+            .evaluate(&req, &dns)
+            .await
+            .expect("policy evaluation must succeed");
+
+        assert!(matches!(
+            evaluation,
+            PolicyEvaluation::Challenge { rule, .. }
+                if rule == "moderate-suspicion"
+        ));
+
+        assert_eq!(
+            dns.calls(),
+            0,
+            "FCrDNS must be skipped when the preceding CEL predicate is false"
+        );
     }
 }
