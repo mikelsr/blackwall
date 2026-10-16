@@ -6,6 +6,8 @@ Blackwall, or **b7l**, is a partial re-implementation of [Anubis](https://anubis
 
 ### Demo
 
+Use these commands to run the demo. The difficulty level is set to 7 to provide better observability. You can tune it in `run/default.env`.
+
 ```shell
 make
 make www        # Start a demo web server

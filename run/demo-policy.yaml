@@ -1,0 +1,13 @@
+bots:
+  - import: (data)/meta/default-config.yaml
+
+thresholds:
+  - name: minimal-suspicion
+    expression: weight <= 0
+    action: ALLOW
+
+  - name: demo-challenge
+    expression: weight > 0
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
