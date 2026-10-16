@@ -114,7 +114,7 @@ impl PolicyEngine {
         dns_verifier: &dyn DnsVerifier,
     ) -> Result<PolicyEvaluation, PolicyMatchError> {
         let context = cel_context(request).map_err(PolicyMatchError::Context)?;
-        let mut weight = 0_i32;
+        let mut weight: i32 = 0;
 
         for rule in &self.rules {
             if !rule.matches(&context, request, dns_verifier).await? {
