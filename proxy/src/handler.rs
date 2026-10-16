@@ -2,7 +2,8 @@ use crate::embed::{
     ASSET_SOLVER_WASM, ASSET_SOLVER_WASM_BROTLI, ASSET_SOLVER_WASM_GZIP, ASSET_SOLVER_WASM_ZSTD,
     CHALLENGE_DECLARATION, HTML_PREFIX, HTML_SUFFIX, WIGGLE_ROOM,
 };
-use crate::{ClientAddr, ProxyState, headers::X_REAL_IP};
+use crate::{ClientAddr, ProxyState, auth::restriction_for_request, headers::X_REAL_IP};
+
 use axum::extract::ConnectInfo;
 use axum::{
     body::Body,
@@ -56,8 +57,6 @@ const HEADER_IP: &str = "ip";
 const HEADER_URI: &str = "uri";
 const HEADER_USER_AGENT: &str = "ua";
 const HEADER_VARY: &str = "Vary";
-
-use sha2::{Digest, Sha256};
 
 struct ChallengeInfo<'a> {
     pub identity: CompactString,
@@ -125,7 +124,7 @@ pub async fn challenge_middleware(
 
         PolicyEvaluation::Challenge { rule, config } => {
             debug!(rule = %rule, uri = %request_uri, "policy: CHALLENGE");
-            if check_token_cookie(&state, &cookie_jar).is_some() {
+            if check_token_cookie(&state, &cookie_jar, req.headers()).is_some() {
                 return next.run(req).await;
             }
             let difficulty = config.as_ref().and_then(|c| c.difficulty);
@@ -146,22 +145,51 @@ pub async fn challenge_middleware(
     }
 }
 
-fn check_token_cookie(state: &ProxyState, jar: &CookieJar) -> Option<()> {
+fn check_token_cookie(state: &ProxyState, jar: &CookieJar, headers: &HeaderMap) -> Option<()> {
     let cookie = jar.get(COOKIE_NAME)?;
-    let val = cookie.value();
-    let preview = &val[..val.len().min(30)];
-    debug!(cookie_preview = %preview, "challenge_middleware: cookie found");
+    let token = cookie.value();
 
-    if let Some(claims) = state.challenge_service.token_service.verify(val) {
-        debug!(
-            challenge = %claims.challenge,
-            method = %claims.method,
-            "challenge_middleware: valid token, forwarding request"
-        );
-        Some(())
-    } else {
-        debug!("challenge_middleware: token verification failed, re-challenging");
-        None
+    let token_preview = &token[..token.len().min(16)];
+    debug!(
+        cookie_preview = %token_preview,
+        "challenge_middleware: cookie found"
+    );
+
+    let current_restriction = match restriction_for_request(
+        headers,
+        state
+            .challenge_service
+            .challenge_config
+            .jwt_restriction_header
+            .as_ref(),
+    ) {
+        Ok(restriction) => restriction,
+        Err(error) => {
+            warn!(
+                %error,
+                "challenge_middleware: cannot evaluate JWT restriction"
+            );
+            return None;
+        }
+    };
+
+    match state
+        .challenge_service
+        .token_service
+        .verify(token, current_restriction.as_deref())
+    {
+        Some(claims) => {
+            debug!(
+                challenge = %claims.challenge,
+                method = %claims.method,
+                "challenge_middleware: valid token and restriction"
+            );
+            Some(())
+        }
+        None => {
+            debug!("challenge_middleware: token signature or restriction is invalid");
+            None
+        }
     }
 }
 
@@ -371,17 +399,34 @@ pub struct PassParameters {
 
 pub async fn pass_challenge(
     State(state): State<Arc<ProxyState>>,
-    ConnectInfo(_): ConnectInfo<ClientAddr>,
     Query(params): Query<PassParameters>,
     headers: HeaderMap,
     jar: CookieJar,
 ) -> Response {
+    // TODO mikel: improve error handling and propagation.
+    let restriction = match restriction_for_request(
+        &headers,
+        state
+            .challenge_service
+            .challenge_config
+            .jwt_restriction_header
+            .as_ref(),
+    ) {
+        Ok(restriction) => restriction,
+        Err(error) => {
+            warn!(
+                %error,
+                "pass_challenge: cannot evaluate JWT restriction"
+            );
+            return StatusCode::FORBIDDEN.into_response();
+        }
+    };
+
     let solution = Solution {
         id: params.id,
         nonce: params.nonce,
     };
 
-    // TODO mikel: return proper, readable errors?
     if verify_solution(state.challenge_service.challenge_repo.as_ref(), &solution)
         .await
         .is_err()
@@ -391,7 +436,7 @@ pub async fn pass_challenge(
 
     let host_header = headers
         .get(HOST)
-        .and_then(|v| v.to_str().ok())
+        .and_then(|value| value.to_str().ok())
         .unwrap_or("");
 
     let final_redir = if redirect_is_safe(params.redir.as_str(), host_header) {
@@ -400,32 +445,17 @@ pub async fn pass_challenge(
         ROOT
     };
 
-    let restriction = state
-        .challenge_service
-        .challenge_config
-        .jwt_restriction_header
-        .as_deref()
-        .and_then(|header_name| headers.get(header_name).and_then(|v| v.to_str().ok()))
-        .map(|value| sha256_to_hex(value));
-    if state
-        .challenge_service
-        .challenge_config
-        .jwt_restriction_header
-        .is_some()
-        && restriction.is_none()
-    {
-        debug!("pass_challenge: restriction header configured but missing from request");
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
-
     let token = match state.challenge_service.token_service.mint(
         params.id,
         POW_METHOD,
         restriction,
         state.challenge_service.challenge_config.ttl.as_secs(),
     ) {
-        Ok(t) => t,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Ok(token) => token,
+        Err(error) => {
+            warn!(?error, "pass_challenge: failed to mint JWT");
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     };
 
     let token_preview = &token[..token.len().min(30)];
@@ -440,13 +470,23 @@ pub async fn pass_challenge(
         .path(ROOT)
         .http_only(true)
         .same_site(SameSite::Lax)
+        .secure(state.challenge_service.challenge_config.cookie_secure)
         .build();
 
-    let response = Response::builder()
+    let response = match Response::builder()
         .status(StatusCode::FOUND)
         .header("Location", final_redir)
         .body(Body::empty())
-        .unwrap();
+    {
+        Ok(response) => response,
+        Err(error) => {
+            warn!(
+                %error,
+                "pass_challenge: failed to build redirect response"
+            );
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
+    };
 
     (jar.add(cookie), response).into_response()
 }
@@ -465,9 +505,4 @@ fn redirect_is_safe(redir: &str, current_host: &str) -> bool {
     }
 
     false
-}
-
-fn sha256_to_hex(input: &str) -> String {
-    let hash = Sha256::digest(input.as_bytes());
-    hex::encode(hash)
 }
