@@ -1,8 +1,10 @@
 use base64::{Engine as _, engine::general_purpose};
 use bytes::Bytes;
+use http::{HeaderName, header::InvalidHeaderName};
 use rand::random;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::str::FromStr;
 use std::time::Duration;
 use tracing::warn;
 use url::Url;
@@ -136,7 +138,7 @@ pub struct ChallengeConfig {
     pub ttl: Duration,
     pub secret: Bytes,
     pub cookie_secure: bool,
-    pub jwt_restriction_header: Option<String>,
+    pub jwt_restriction_header: Option<HeaderName>,
 }
 
 impl ChallengeConfig {
@@ -148,6 +150,15 @@ impl ChallengeConfig {
         jwt_restriction_header: Option<String>,
     ) -> Result<Self, ConfigError> {
         let validated_secret = Self::validate_or_generate_secret(secret)?;
+
+        let jwt_restriction_header = jwt_restriction_header
+            .filter(|value| !value.trim().is_empty())
+            .map(|value| {
+                HeaderName::from_str(&value)
+                    .map_err(|source| ConfigError::InvalidJwtRestrictionHeader { value, source })
+            })
+            .transpose()?;
+
         Ok(Self {
             difficulty,
             ttl,
@@ -157,18 +168,20 @@ impl ChallengeConfig {
         })
     }
 
-    // TODO mikel: validation only works for Ed25519 currently
     fn validate_or_generate_secret(secret: Option<String>) -> Result<Bytes, ConfigError> {
         match secret {
             Some(encoded_secret) => {
-                let decoded_secret = general_purpose::STANDARD.decode(encoded_secret).unwrap();
+                let decoded_secret = general_purpose::STANDARD
+                    .decode(encoded_secret)
+                    .map_err(|_| ConfigError::InvalidSecretEncoding)?;
+
                 let raw_secret: [u8; 32] = decoded_secret
                     .try_into()
                     .map_err(|_| ConfigError::InvalidSecretLength)?;
+
                 Ok(Bytes::copy_from_slice(&raw_secret))
             }
             None => {
-                // Generate a random key if none is provided.
                 warn!("No challenge secret provided, generating a random key.");
                 let raw_key: [u8; 32] = random();
                 Ok(Bytes::copy_from_slice(&raw_key))
@@ -211,25 +224,33 @@ pub mod proxy {
 
 #[derive(Debug)]
 pub enum ConfigError {
-    InvalidBindNetwork(String),
-    InvalidTarget {
-        value: String,
-        source: url::ParseError,
-    },
-    UnsupportedTargetScheme(String),
-    UnixTargetNotYetImplemented,
     InvalidBasePrefix {
         value: String,
         reason: &'static str,
     },
-    StripBasePrefixRequiresBasePrefix,
+    InvalidBindNetwork(String),
+    InvalidJwtRestrictionHeader {
+        value: String,
+        source: InvalidHeaderName,
+    },
     InvalidSecretEncoding,
     InvalidSecretLength,
+
+    InvalidTarget {
+        value: String,
+        source: url::ParseError,
+    },
+    StripBasePrefixRequiresBasePrefix,
+    UnixTargetNotYetImplemented,
+    UnsupportedTargetScheme(String),
 }
 
 impl Display for ConfigError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self {
+            ConfigError::InvalidBasePrefix { value, reason } => {
+                write!(f, "invalid base-prefix {:?}: {}", value, reason)
+            }
             ConfigError::InvalidBindNetwork(value) => {
                 write!(
                     f,
@@ -240,6 +261,18 @@ impl Display for ConfigError {
             ConfigError::InvalidTarget { value, .. } => {
                 write!(f, "invalid target {:?}", value)
             }
+            ConfigError::InvalidSecretEncoding => {
+                write!(f, "invalid secret encoding or format")
+            }
+            ConfigError::InvalidSecretLength => {
+                write!(f, "invalid secret length")
+            }
+            ConfigError::InvalidJwtRestrictionHeader { value, .. } => {
+                write!(f, "invalid JWT restriction header {:?}", value)
+            }
+            ConfigError::StripBasePrefixRequiresBasePrefix => {
+                write!(f, "strip-base-prefix=true requires a non-empty base-prefix")
+            }
             ConfigError::UnsupportedTargetScheme(value) => {
                 write!(f, "unsupported target scheme {:?}", value)
             }
@@ -249,18 +282,6 @@ impl Display for ConfigError {
                     "unix targets are recognized but not implemented in the MVP"
                 )
             }
-            ConfigError::InvalidBasePrefix { value, reason } => {
-                write!(f, "invalid base-prefix {:?}: {}", value, reason)
-            }
-            ConfigError::StripBasePrefixRequiresBasePrefix => {
-                write!(f, "strip-base-prefix=true requires a non-empty base-prefix")
-            }
-            ConfigError::InvalidSecretEncoding => {
-                write!(f, "invalid secret encoding or format")
-            }
-            ConfigError::InvalidSecretLength => {
-                write!(f, "invalid secret length")
-            }
         }
     }
 }
@@ -269,6 +290,7 @@ impl Error for ConfigError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             ConfigError::InvalidTarget { source, .. } => Some(source),
+            ConfigError::InvalidJwtRestrictionHeader { source, .. } => Some(source),
             _ => None,
         }
     }
