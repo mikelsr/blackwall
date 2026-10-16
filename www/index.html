@@ -1,3 +1,359 @@
-Part 1
-<!--B7L_INJECTION-->
-Part 2
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Blackwall Challenge</title>
+    <script><!--B7L_INJECTION--></script>
+    <style>
+        * { box-sizing: border-box; }
+        body {
+            font-family: Futura, Bahnschrift, 'Avenir Next Condensed', 'Arial Narrow', sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #0a0a0a;
+            color: #cc1a1a;
+        }
+        h1 {
+            color: #ff1a1a;
+            text-transform: uppercase;
+            letter-spacing: 4px;
+            font-size: 1.4em;
+            border-bottom: 1px solid #331111;
+            padding-bottom: 10px;
+            text-shadow: 0 0 8px rgba(255,26,26,0.4);
+        }
+        .status-box {
+            background: #0f0f0f;
+            padding: 20px;
+            border: 1px solid #331111;
+            margin-top: 20px;
+            font-size: 13px;
+        }
+        .workers {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            margin-top: 10px;
+            justify-content: center;
+        }
+        .worker {
+            background: #1a0a0a;
+            border: 1px solid #331111;
+            padding: 6px 10px;
+            font-size: 11px;
+            text-transform: uppercase;
+        }
+        .worker.active {
+            border-color: #ff1a1a;
+            color: #ff1a1a;
+            box-shadow: 0 0 6px rgba(255,26,26,0.3);
+        }
+        .worker.found {
+            background: #ff1a1a;
+            color: #0a0a0a;
+            border-color: #ff1a1a;
+        }
+        .result {
+            background: #1a0a0a;
+            padding: 15px;
+            margin-top: 15px;
+            word-break: break-all;
+            font-size: 12px;
+            border-left: 2px solid #331111;
+        }
+        .result.success { border-left-color: #ff1a1a; }
+        .result.error { border-left-color: #662222; }
+        #elapsed { color: #ff1a1a; }
+        strong { color: #dd2222; text-transform: uppercase; }
+        .inv { background: #ff1a1a; color: #0a0a0a; padding: 6px 10px; font-size: 11px; }
+        .loading {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border: 2px solid #331111;
+            border-top-color: #ff1a1a;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-left: 8px;
+            vertical-align: middle;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+        .error-msg {
+            background: #1a0505;
+            border: 1px solid #662222;
+            padding: 15px;
+            margin-top: 20px;
+            color: #cc4444;
+        }
+    </style>
+</head>
+<body>
+    <h1>// Blackwall Challenge</h1>
+
+    <div class="status-box">
+        <div><strong>Status:</strong> <span id="statusText">Initializing...</span><span id="loadingSpinner" class="loading"></span></div>
+        <div><strong>Elapsed:</strong> <span id="elapsed">-</span></div>
+        <div><strong>Workers:</strong></div>
+        <div class="workers" id="workersContainer"></div>
+        <div id="resultContainer"></div>
+    </div>
+
+    <script>
+        (function() {
+            // ===== UI Helpers =====
+            let startTime = null;
+            let elapsedInterval = null;
+            let workers = [];
+
+            function updateElapsed() {
+                if (startTime) {
+                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
+                    document.getElementById('elapsed').textContent = `${elapsed}s`;
+                }
+            }
+
+            function setStatus(text, html = false, showSpinner = false) {
+                const el = document.getElementById('statusText');
+                if (html) el.innerHTML = text;
+                else el.textContent = text;
+                document.getElementById('loadingSpinner').style.display = showSpinner ? 'inline-block' : 'none';
+            }
+
+            function showResult(success, message) {
+                const container = document.getElementById('resultContainer');
+                container.innerHTML = '<div class="result ' + (success ? 'success' : 'error') + '">' + message + '</div>';
+            }
+
+            function showError(message) {
+                setStatus('Error', false, false);
+                const container = document.getElementById('resultContainer');
+                container.innerHTML = '<div class="error-msg">' + message + '</div>';
+            }
+
+            function terminateAllWorkers() {
+                workers.forEach(function(w) { w.terminate(); });
+                workers = [];
+                if (elapsedInterval) {
+                    clearInterval(elapsedInterval);
+                    elapsedInterval = null;
+                }
+            }
+
+            // ===== Worker Code (as string for Blob URL) =====
+            const workerCode = [
+                '// WASM bindings inside worker',
+                'function __wbg_get_imports() {',
+                '    const import0 = { __proto__: null };',
+                '    return { __proto__: null, "./challenge_wasm_bg.js": import0 };',
+                '}',
+                '',
+                'let cachedUint8ArrayMemory0 = null;',
+                'function getUint8ArrayMemory0(wasm) {',
+                '    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {',
+                '        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);',
+                '    }',
+                '    return cachedUint8ArrayMemory0;',
+                '}',
+                '',
+                'let WASM_VECTOR_LEN = 0;',
+                'function passArray8ToWasm0(wasm, arg, malloc) {',
+                '    const ptr = malloc(arg.length * 1, 1) >>> 0;',
+                '    getUint8ArrayMemory0(wasm).set(arg, ptr / 1);',
+                '    WASM_VECTOR_LEN = arg.length;',
+                '    return ptr;',
+                '}',
+                '',
+                'function solve(wasm, random_data, difficulty, start_nonce, step) {',
+                '    cachedUint8ArrayMemory0 = null;',
+                '    const ptr0 = passArray8ToWasm0(wasm, random_data, wasm.__wbindgen_export);',
+                '    const len0 = WASM_VECTOR_LEN;',
+                '    const ret = wasm.solve(ptr0, len0, difficulty, start_nonce, step);',
+                '    return BigInt.asUintN(64, ret);',
+                '}',
+                '',
+                'let wasm = null;',
+                '',
+                'self.onmessage = async function(e) {',
+                '    const { type, workerId, wasmUrl, randomData, difficulty, startNonce, step } = e.data;',
+                '',
+                '    if (type === "init") {',
+                '        try {',
+                '            const imports = __wbg_get_imports();',
+                '            const response = await fetch(wasmUrl);',
+                '            const { instance } = await WebAssembly.instantiateStreaming(response, imports);',
+                '            wasm = instance.exports;',
+                '            self.postMessage({ type: "ready", workerId: workerId });',
+                '        } catch (err) {',
+                '            self.postMessage({ type: "error", workerId: workerId, error: err.message });',
+                '        }',
+                '    } else if (type === "solve") {',
+                '        try {',
+                '            const randomDataArray = new Uint8Array(randomData);',
+                '            const nonce = solve(',
+                '                wasm,',
+                '                randomDataArray,',
+                '                difficulty,',
+                '                BigInt(startNonce),',
+                '                BigInt(step)',
+                '            );',
+                '            self.postMessage({ type: "found", workerId: workerId, nonce: nonce.toString() });',
+                '        } catch (err) {',
+                '            self.postMessage({ type: "error", workerId: workerId, error: err.message });',
+                '        }',
+                '    }',
+                '};'
+            ].join('\n');
+
+            // ===== Main Challenge Logic =====
+            function startChallenge() {
+                // Check for challenge data
+                if (!window.ANUBIS_CHALLENGE) {
+                    showError('Challenge data not found. <code>window.ANUBIS_CHALLENGE</code> is not defined.');
+                    return;
+                }
+
+                const challenge = window.ANUBIS_CHALLENGE;
+                const id = challenge.id;
+                const randomData = challenge.randomData;
+                const difficulty = challenge.difficulty;
+
+                if (!id || !randomData || typeof difficulty !== 'number') {
+                    showError('Invalid challenge data structure.');
+                    return;
+                }
+
+                // Convert randomData array to Uint8Array
+                const randomDataBytes = new Uint8Array(randomData);
+
+                // Determine number of workers
+                const detectedCores = Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency > 0
+                    ? navigator.hardwareConcurrency
+                    : 4;
+                const numWorkers = Math.max(1, Math.ceil(detectedCores / 2));
+
+                // Create worker status indicators
+                const workersContainer = document.getElementById('workersContainer');
+                workersContainer.innerHTML = '';
+                for (let i = 0; i < numWorkers; i++) {
+                    const div = document.createElement('div');
+                    div.className = 'worker';
+                    div.id = 'worker-' + i;
+                    div.textContent = 'W' + i;
+                    workersContainer.appendChild(div);
+                }
+
+                setStatus('Loading WASM...', false, true);
+
+                const wasmUrl = window.location.origin + '/.within.website/x/cmd/anubis/api/solver.wasm';
+                const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
+                const workerBlobUrl = URL.createObjectURL(workerBlob);
+
+                let workersReady = 0;
+                let solved = false;
+
+                // Create workers
+                for (let i = 0; i < numWorkers; i++) {
+                    const worker = new Worker(workerBlobUrl);
+                    const workerIndex = i;
+
+                    worker.onmessage = function(e) {
+                        const data = e.data;
+                        const type = data.type;
+                        const workerId = data.workerId;
+                        const nonce = data.nonce;
+                        const error = data.error;
+
+                        if (type === 'ready') {
+                            document.getElementById('worker-' + workerId).classList.add('active');
+                            workersReady++;
+
+                            if (workersReady === numWorkers) {
+                                // All workers ready, start solving
+                                setStatus('Solving challenge...', false, true);
+                                startTime = performance.now();
+                                elapsedInterval = setInterval(updateElapsed, 100);
+
+                                // Send solve command to all workers
+                                workers.forEach(function(w, idx) {
+                                    w.postMessage({
+                                        type: 'solve',
+                                        workerId: idx,
+                                        randomData: Array.from(randomDataBytes),
+                                        difficulty: difficulty,
+                                        startNonce: idx,
+                                        step: numWorkers
+                                    });
+                                });
+                            }
+                        } else if (type === 'found' && !solved) {
+                            solved = true;
+                            const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
+
+                            // Update worker indicator
+                            document.getElementById('worker-' + workerId).classList.remove('active');
+                            document.getElementById('worker-' + workerId).classList.add('found');
+
+                            setStatus('Solved by <span class="inv">W' + workerId + '</span>', true, false);
+                            updateElapsed();
+
+                            showResult(true,
+                                '<strong>Solution found!</strong><br><br>' +
+                                '<strong>Nonce:</strong> ' + nonce + '<br>' +
+                                '<strong>Time:</strong> ' + elapsed + 's<br>' +
+                                '<strong>Worker:</strong> ' + workerId + '<br><br>' +
+                                '<em>Redirecting...</em>'
+                            );
+
+                            terminateAllWorkers();
+                            URL.revokeObjectURL(workerBlobUrl);
+
+                            // Submit solution
+                            const redir = window.location.pathname + window.location.search;
+                            const passUrl = new URL('/.within.website/x/cmd/anubis/api/pass-challenge', window.location.origin);
+                            passUrl.searchParams.set('id', id);
+                            passUrl.searchParams.set('nonce', nonce);
+                            passUrl.searchParams.set('redir', redir);
+
+                            // Redirect to pass-challenge endpoint
+                            window.location.href = passUrl.toString();
+
+                        } else if (type === 'error') {
+                            showError('Worker ' + workerId + ' error: ' + error);
+                            terminateAllWorkers();
+                            URL.revokeObjectURL(workerBlobUrl);
+                        }
+                    };
+
+                    worker.onerror = function(err) {
+                        showError('Worker ' + workerIndex + ' failed: ' + err.message);
+                        terminateAllWorkers();
+                        URL.revokeObjectURL(workerBlobUrl);
+                    };
+
+                    workers.push(worker);
+                }
+
+                // Initialize all workers (load WASM)
+                workers.forEach(function(worker, i) {
+                    worker.postMessage({
+                        type: 'init',
+                        workerId: i,
+                        wasmUrl: wasmUrl
+                    });
+                });
+            }
+
+            // Auto-start when DOM is ready
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', startChallenge);
+            } else {
+                startChallenge();
+            }
+        })();
+    </script>
+</body>
+</html>
