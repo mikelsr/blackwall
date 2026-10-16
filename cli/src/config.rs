@@ -1,14 +1,20 @@
-use std::time::Duration;
+use std::{error::Error, fmt, path::Path, time::Duration};
+
+use shared::{
+    config::{
+        BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
+        PathRewriteConfig, ProxyConfig, Target,
+    },
+    policy::{
+        PolicyEngine,
+        file::{self as policy_file, PolicyLoadError},
+    },
+};
 
 use clap::Parser;
 use humantime::parse_duration;
-use shared::config::{
-    BindNetwork, ChallengeConfig, Config, ConfigError, ListenerConfig, MetricsConfig,
-    PathRewriteConfig, ProxyConfig, Target,
-};
-use shared::policy::PolicyEngine;
 
-pub(crate) fn load_config() -> Result<StartupMode, ConfigError> {
+pub(crate) fn load_config() -> Result<StartupMode, StartupError> {
     let env_config = dotenvy::dotenv();
     match env_config {
         Ok(path) => eprintln!("loaded env from {}", path.display()),
@@ -30,7 +36,7 @@ pub(crate) enum StartupMode {
 }
 
 impl StartupMode {
-    fn parse(args: RawArgs) -> Result<StartupMode, ConfigError> {
+    fn parse(args: RawArgs) -> Result<StartupMode, StartupError> {
         if args.version {
             return Ok(StartupMode::Version);
         }
@@ -40,8 +46,14 @@ impl StartupMode {
             }));
         }
 
+        let policy_fname = args.policy_fname.clone();
         let config = args.into_config()?;
-        let policy_engine = PolicyEngine::default(config.proxy.challenge.difficulty);
+        let default_difficulty = config.proxy.challenge.difficulty;
+
+        let policy_engine = match non_empty(policy_fname) {
+            Some(path) => policy_file::load_policy_file(Path::new(&path), default_difficulty)?,
+            None => policy_file::default(default_difficulty)?,
+        };
 
         Ok(StartupMode::Run {
             config: Box::new(config),
@@ -215,4 +227,40 @@ struct RawArgs {
         default_value = "X-Real-IP"
     )]
     pub(super) jwt_restriction_header: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) enum StartupError {
+    Config(ConfigError),
+    Policy(PolicyLoadError),
+}
+
+impl From<ConfigError> for StartupError {
+    fn from(error: ConfigError) -> Self {
+        Self::Config(error)
+    }
+}
+
+impl From<PolicyLoadError> for StartupError {
+    fn from(error: PolicyLoadError) -> Self {
+        Self::Policy(error)
+    }
+}
+
+impl fmt::Display for StartupError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Config(error) => write!(f, "{error}"),
+            Self::Policy(error) => write!(f, "failed to load policy: {error}"),
+        }
+    }
+}
+
+impl Error for StartupError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Config(error) => Some(error),
+            Self::Policy(error) => Some(error),
+        }
+    }
 }
