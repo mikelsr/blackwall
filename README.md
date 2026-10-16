@@ -1,6 +1,6 @@
 # Blackwall
 
-Blackwall, or b7l, is a partial re-implementation of [Anubis](https://anubis.techaro.lol/) in Rust.
+Blackwall, or **b7l**, is a partial re-implementation of [Anubis](https://anubis.techaro.lol/) in Rust.
 
 ## Usage
 
@@ -23,7 +23,7 @@ To be fair these are points rather than questions.
 - **Why use WebAssembly for the challenges?**
   WASM is supported by most browsers but not as much by scrapping tools. It also let's us have a single implementation of the challenge logic for both frontend and backend.
 
-  > As of v1.28.0, Anubis supports WASM challenges too!
+  > As of [v1.28.0](https://github.com/TecharoHQ/anubis/discussions/2014), Anubis supports WASM challenges too!
 
 - **AI usage**
   B7L has been coded by a human (me). AI has been used to:
