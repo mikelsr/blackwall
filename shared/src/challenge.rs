@@ -25,7 +25,6 @@ pub struct Challenge {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Solution {
     pub id: Uuid,
-    #[serde(rename = "randomData")]
     pub nonce: u64,
 }
 
