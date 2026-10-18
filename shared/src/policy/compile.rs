@@ -1,11 +1,12 @@
 use cel::common::ast::{Expr, IdedExpr, LiteralValue};
-use cel::{Context, Program, Value};
+use cel::{Context, Env, Program, Value};
 use compact_str::CompactString;
 use ipnet::IpNet;
 use regex::{self, Regex};
 use std::collections::HashMap;
 use std::fmt;
 use std::slice;
+use std::sync::{Arc, LazyLock};
 
 use super::dns::DnsVerifier;
 use super::model::CEL_REMOTE_ADDRESS;
@@ -16,6 +17,9 @@ const PATH_REGEX: &str = "path_regex";
 const USER_AGENT_REGEX: &str = "user_agent_regex";
 const HEADERS_REGEX: &str = "headers_regex";
 const VERIFY_FCRDNS: &str = "verifyFCrDNS";
+
+/// Setup CEL stdlib only once.
+static CEL_STDLIB: LazyLock<Arc<Env>> = LazyLock::new(|| Arc::new(Env::stdlib()));
 
 /// Rules kept at runtime and used for actual evaluation.
 #[derive(Debug)]
@@ -411,7 +415,7 @@ fn cel_query(query: Option<&str>) -> HashMap<String, String> {
 pub(crate) fn cel_context(
     request: &PolicyRequest<'_>,
 ) -> Result<Context<'static, 'static>, cel::SerializationError> {
-    let mut context = Context::default();
+    let mut context = Context::with_env(Arc::clone(&CEL_STDLIB));
     let query = cel_query(request.query);
 
     context.add_variable(CEL_REMOTE_ADDRESS, request.remote_address.to_string())?;
