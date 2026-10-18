@@ -17,7 +17,7 @@ pub(crate) const CEL_PATH: &str = "path";
 pub(crate) const CEL_QUERY: &str = "query";
 pub(crate) const CEL_HEADERS: &str = "headers";
 
-const RULE_CEL_VARIABLES: &[&str] = &[
+pub(crate) const RULE_CEL_VARIABLES: &[&str] = &[
     CEL_REMOTE_ADDRESS,
     CEL_CONTENT_LENGTH,
     CEL_USER_AGENT,

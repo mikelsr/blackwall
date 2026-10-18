@@ -4,15 +4,24 @@ use super::compile::{
     CompiledRule, CompiledThreshold, PolicyMatchError, ThresholdLogic, WeightPredicate, cel_context,
 };
 use super::dns::DnsVerifier;
-use super::model::{Action, ChallengeRules, Rule, Weight};
+use super::model::{Action, ChallengeRules, RULE_CEL_VARIABLES, Rule, Weight};
 use super::request::PolicyRequest;
 
 const LEGACY_ANUBIS_NAME: &str = "legacy-anubis-behaviour";
 const DEFAULT_ALGORITHM: &str = "fast";
 
+fn cel_variables(rules: &[CompiledRule]) -> Vec<&'static str> {
+    RULE_CEL_VARIABLES
+        .iter()
+        .copied()
+        .filter(|variable| rules.iter().any(|rule| rule.reads_cel_variable(variable)))
+        .collect()
+}
+
 #[derive(Debug)]
 pub struct PolicyEngine {
     rules: Vec<CompiledRule>,
+    cel_variables: Vec<&'static str>,
     thresholds: Vec<CompiledThreshold>,
     default_difficulty: u32,
 }
@@ -54,6 +63,7 @@ impl PolicyEngine {
         };
 
         Self {
+            cel_variables: cel_variables(&rules),
             rules,
             thresholds,
             default_difficulty,
@@ -97,11 +107,7 @@ impl PolicyEngine {
             },
         ];
 
-        Self {
-            rules: vec![browser_rule],
-            thresholds,
-            default_difficulty,
-        }
+        Self::new(vec![browser_rule], thresholds, default_difficulty)
     }
 
     pub fn default_difficulty(&self) -> u32 {
@@ -113,7 +119,8 @@ impl PolicyEngine {
         request: &PolicyRequest<'_>,
         dns_verifier: &dyn DnsVerifier,
     ) -> Result<PolicyEvaluation, PolicyMatchError> {
-        let context = cel_context(request).map_err(PolicyMatchError::Context)?;
+        let context =
+            cel_context(request, &self.cel_variables).map_err(PolicyMatchError::Context)?;
         let mut weight: i32 = 0;
 
         for rule in &self.rules {

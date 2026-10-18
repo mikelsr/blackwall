@@ -207,6 +207,12 @@ impl CompiledRule {
 
         Ok(true)
     }
+
+    pub(crate) fn reads_cel_variable(&self, name: &str) -> bool {
+        self.expression
+            .as_ref()
+            .is_some_and(|expression| expression.reads_cel_variable(name))
+    }
 }
 
 #[derive(Debug)]
@@ -250,6 +256,13 @@ impl CompiledRuleExpression {
                 Ok(false)
             }
         }
+    }
+
+    fn reads_cel_variable(&self, name: &str) -> bool {
+        let (Self::All(predicates) | Self::Any(predicates)) = self;
+        predicates.iter().any(|predicate| {
+            matches!(predicate, CompiledRulePredicate::Cel(program) if program.references().has_variable(name))
+        })
     }
 }
 
@@ -414,24 +427,33 @@ fn cel_query(query: Option<&str>) -> HashMap<String, String> {
 
 pub(crate) fn cel_context(
     request: &PolicyRequest<'_>,
+    variables: &[&str],
 ) -> Result<Context<'static, 'static>, cel::SerializationError> {
     let mut context = Context::with_env(Arc::clone(&CEL_STDLIB));
-    let query = cel_query(request.query);
 
-    context.add_variable(CEL_REMOTE_ADDRESS, request.remote_address.to_string())?;
-    context.add_variable(
-        CEL_CONTENT_LENGTH,
-        request
-            .content_length
-            .map(|length| i64::try_from(length).unwrap_or(i64::MAX))
-            .unwrap_or(0),
-    )?;
-    context.add_variable(CEL_USER_AGENT, request.user_agent.unwrap_or("").to_owned())?;
-    context.add_variable(CEL_HOST, request.host.unwrap_or("").to_owned())?;
-    context.add_variable(CEL_METHOD, request.method.to_owned())?;
-    context.add_variable(CEL_PATH, request.path.to_owned())?;
-    context.add_variable(CEL_QUERY, query)?;
-    context.add_variable(CEL_HEADERS, cel_headers(request.headers))?;
+    for &variable in variables {
+        match variable {
+            CEL_REMOTE_ADDRESS => {
+                context.add_variable(variable, request.remote_address.to_string())?
+            }
+            CEL_CONTENT_LENGTH => context.add_variable(
+                variable,
+                request
+                    .content_length
+                    .map(|length| i64::try_from(length).unwrap_or(i64::MAX))
+                    .unwrap_or(0),
+            )?,
+            CEL_USER_AGENT => {
+                context.add_variable(variable, request.user_agent.unwrap_or("").to_owned())?
+            }
+            CEL_HOST => context.add_variable(variable, request.host.unwrap_or("").to_owned())?,
+            CEL_METHOD => context.add_variable(variable, request.method.to_owned())?,
+            CEL_PATH => context.add_variable(variable, request.path.to_owned())?,
+            CEL_QUERY => context.add_variable(variable, cel_query(request.query))?,
+            CEL_HEADERS => context.add_variable(variable, cel_headers(request.headers))?,
+            _ => {}
+        }
+    }
 
     Ok(context)
 }
@@ -832,6 +854,26 @@ pub(crate) mod compile_tests {
         r.expression = Some(Expression::Simple(r#""X-Firefox-Ai" in headers"#.into()));
         assert!(CompiledRule::compile(&r).is_ok());
     }
+
+    #[test]
+    fn reads_only_referenced_cel_variables() {
+        let mut r = rule("expr", Action::Deny);
+        r.expression = Some(Expression::All {
+            all: vec![r#"method == "POST""#.into(), r#""X-Bot" in headers"#.into()],
+        });
+        let compiled = CompiledRule::compile(&r).unwrap();
+        assert!(compiled.reads_cel_variable(CEL_METHOD));
+        assert!(compiled.reads_cel_variable(CEL_HEADERS));
+        assert!(!compiled.reads_cel_variable(CEL_QUERY));
+
+        let mut r = rule("path", Action::Allow);
+        r.path_regex = Some(".*".into());
+        assert!(
+            !CompiledRule::compile(&r)
+                .unwrap()
+                .reads_cel_variable(CEL_PATH)
+        );
+    }
     //
     //     #[test]
     //     fn compile_accepts_geoip_as_sole_matcher() {
@@ -861,11 +903,11 @@ pub(crate) mod compile_tests {
         let dns_verifier = StubDnsVerifier { result: false };
 
         let req = request("/api/users", None, &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/home", None, &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
@@ -898,7 +940,7 @@ pub(crate) mod compile_tests {
             headers: &headers,
         };
 
-        let context = cel_context(&request).unwrap();
+        let context = cel_context(&request, RULE_CEL_VARIABLES).unwrap();
         let dns_verifier = StubDnsVerifier { result: false };
         assert!(
             compiled
@@ -926,11 +968,11 @@ pub(crate) mod compile_tests {
         let dns_verifier = StubDnsVerifier { result: false };
 
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
@@ -944,11 +986,11 @@ pub(crate) mod compile_tests {
         let dns_verifier = StubDnsVerifier { result: false };
 
         let req = request("/", None, &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", None, &empty_headers, external_ip());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
@@ -963,11 +1005,11 @@ pub(crate) mod compile_tests {
         let empty_headers = empty_headers();
         let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("Mozilla/5.0"), &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(c.matches(&context, &req, &dns_verifier).await.unwrap());
 
         let req = request("/", Some("curl/7"), &empty_headers, localhost());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
         assert!(!c.matches(&context, &req, &dns_verifier).await.unwrap());
     }
 
@@ -1033,6 +1075,22 @@ pub(crate) mod compile_tests {
         let empty_headers = empty_headers();
         let dns_verifier = StubDnsVerifier { result: false };
         let req = request("/", Some("BadBot/1.0"), &empty_headers, localhost());
+        assert!(matches!(
+            engine.evaluate(&req, &dns_verifier).await,
+            Ok(PolicyEvaluation::Deny { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn engine_binds_variables_its_expressions_read() {
+        let mut r = rule("deny-bot-header", Action::Deny);
+        r.expression = Some(Expression::Simple(r#""X-Bot" in headers"#.into()));
+        let engine = PolicyEngine::new(vec![CompiledRule::compile(&r).unwrap()], vec![], 4);
+        let dns_verifier = StubDnsVerifier { result: false };
+
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Bot", "1".parse().unwrap());
+        let req = request("/", None, &headers, localhost());
         assert!(matches!(
             engine.evaluate(&req, &dns_verifier).await,
             Ok(PolicyEvaluation::Deny { .. })
@@ -1177,7 +1235,7 @@ pub(crate) mod compile_tests {
 
         let missing_headers = HeaderMap::new();
         let req = request("/", Some("Mozilla/5.0"), &missing_headers, external_ip());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
 
         assert!(
             !compiled
@@ -1190,7 +1248,7 @@ pub(crate) mod compile_tests {
         present_headers.insert("CF-Worker", "worker-name".parse().unwrap());
 
         let req = request("/", Some("Mozilla/5.0"), &present_headers, external_ip());
-        let context = cel_context(&req).unwrap();
+        let context = cel_context(&req, RULE_CEL_VARIABLES).unwrap();
 
         assert!(
             compiled
