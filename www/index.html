@@ -15,22 +15,46 @@
             background: #0a0a0a;
             color: #cc1a1a;
         }
+        .header {
+            border-bottom: 1px solid #331111;
+            padding-bottom: 12px;
+            margin-bottom: 24px;
+        }
         h1 {
+            margin: 0;
             color: #ff1a1a;
             text-transform: uppercase;
-            letter-spacing: 4px;
-            font-size: 1.4em;
-            border-bottom: 1px solid #331111;
-            padding-bottom: 10px;
-            text-shadow: 0 0 8px rgba(255,26,26,0.4);
+            letter-spacing: 0.17em;
+            font-size: clamp(28px, 8vw, 44px);
+            font-weight: 800;
+            line-height: 1.1;
+            text-shadow: 0 0 14px rgba(255,26,26,0.5);
         }
+        .sub {
+            margin-top: 6px;
+            font-size: 13px;
+            letter-spacing: 0.35em;
+            text-transform: uppercase;
+            color: #882222;
+        }
+        /* Chamfered panel: the outer layer is the border colour, ::before is the fill. */
         .status-box {
-            background: #0f0f0f;
+            --cut: 14px;
+            position: relative;
+            background: #4a1414;
+            clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
             padding: 20px;
-            border: 1px solid #331111;
             margin-top: 20px;
             font-size: 13px;
         }
+        .status-box::before {
+            content: "";
+            position: absolute;
+            inset: 1px;
+            background: #0f0f0f;
+            clip-path: polygon(calc(var(--cut) - 0.5px) 0, 100% 0, 100% calc(100% - var(--cut) + 0.5px), calc(100% - var(--cut) + 0.5px) 100%, 0 100%, 0 calc(var(--cut) - 0.5px));
+        }
+        .status-box > * { position: relative; }
         .workers {
             display: flex;
             gap: 8px;
@@ -89,10 +113,48 @@
             margin-top: 20px;
             color: #cc4444;
         }
+        /* Static background (painted once, no JS): a wall of light filaments over a dot floor. */
+        body::before, body::after {
+            content: "";
+            position: fixed;
+            z-index: -1;
+            pointer-events: none;
+        }
+        /* Filaments: three line patterns with co-prime periods so the spacing looks irregular. */
+        body::before {
+            top: 0; right: 0;
+            width: clamp(170px, 22vw + 50px, 350px);
+            height: calc(80% + 60px);
+            background:
+                repeating-linear-gradient(90deg, rgba(255,36,40,.3) 0 1px, transparent 1px 5px),
+                repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,50,120,.35) 3px 4px, transparent 4px 7px),
+                repeating-linear-gradient(90deg, transparent 0 9px, rgba(255,70,70,.6) 9px 10px, transparent 10px 13px),
+                linear-gradient(90deg, transparent, rgba(200,10,30,.15));
+            -webkit-mask: linear-gradient(90deg, transparent, rgba(0,0,0,.3) 30%, #000), linear-gradient(transparent, rgba(0,0,0,.7) 12%, #000 70%, transparent);
+            -webkit-mask-composite: source-in;
+            mask: linear-gradient(90deg, transparent, rgba(0,0,0,.3) 30%, #000), linear-gradient(transparent, rgba(0,0,0,.7) 12%, #000 70%, transparent);
+            mask-composite: intersect;
+        }
+        /* Floor: a dot grid tilted back so it recedes toward the wall (horizon at 20% from the bottom). */
+        body::after {
+            left: 0; bottom: 0;
+            width: 200vw;
+            height: 150vh;
+            background: radial-gradient(circle, #ff2a32 2px, transparent 2.6px) 0 0 / 22px 22px;
+            transform-origin: 88vw 100%;
+            transform: perspective(45vh) rotateX(66deg);
+            -webkit-mask: linear-gradient(90deg, transparent 5%, rgba(0,0,0,.4) 30%, #000 44%), linear-gradient(transparent, #000 45%, rgba(0,0,0,.55));
+            -webkit-mask-composite: source-in;
+            mask: linear-gradient(90deg, transparent 5%, rgba(0,0,0,.4) 30%, #000 44%), linear-gradient(transparent, #000 45%, rgba(0,0,0,.55));
+            mask-composite: intersect;
+        }
     </style>
 </head>
 <body>
-    <h1>// Blackwall Challenge</h1>
+    <div class="header">
+        <h1>Blackwall</h1>
+        <div class="sub">Proof of work</div>
+    </div>
 
     <div class="status-box">
         <div><strong>Status:</strong> <span id="statusText">Initializing...</span><span id="loadingSpinner" class="loading"></span></div>
