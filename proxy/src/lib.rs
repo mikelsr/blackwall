@@ -32,7 +32,7 @@ use axum::{
 };
 use hyper_rustls::{HttpsConnector, HttpsConnectorBuilder};
 use hyper_util::{client::legacy, rt::TokioExecutor};
-use shared::config::{BasePrefix, PathRewriteConfig, ProxyConfig, Target};
+use shared::config::{BasePrefix, ProxyConfig, Target};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::sync::Arc;
@@ -79,52 +79,32 @@ impl RuntimeMode {
     }
 
     pub fn new(config: ProxyConfig, policy_engine: PolicyEngine) -> Result<Self, ProxyInitError> {
-        let ProxyConfig {
-            target,
-            target_host,
-            insecure_skip_verify,
-            disable_keepalive,
-            path_rewrite,
-            .. // TODO mikel
-        } = config;
+        let (url, scheme) = match &config.target {
+            Target::Disabled => return Ok(RuntimeMode::AuthOnly),
+            Target::Http(url) => (url.clone(), Scheme::HTTP),
+            Target::Https(url) => (url.clone(), Scheme::HTTPS),
+        };
 
-        match target {
-            Target::Disabled => Ok(RuntimeMode::AuthOnly),
-            Target::Http(url) => Self::build_proxy_state(
-                target_host,
-                path_rewrite,
-                insecure_skip_verify,
-                disable_keepalive,
-                url,
-                config.challenge,
-                Scheme::HTTP,
-                policy_engine,
-            ),
-            Target::Https(url) => Self::build_proxy_state(
-                target_host,
-                path_rewrite,
-                insecure_skip_verify,
-                disable_keepalive,
-                url,
-                config.challenge,
-                Scheme::HTTPS,
-                policy_engine,
-            ),
-        }
+        Self::build_proxy_state(config, url, scheme, policy_engine)
     }
 }
 
 impl RuntimeMode {
     fn build_proxy_state(
-        target_host: Option<String>,
-        path_rewrite: Option<PathRewriteConfig>,
-        insecure_skip_verify: bool,
-        disable_keepalive: bool,
+        config: ProxyConfig,
         url: Url,
-        challenge_config: ChallengeConfig,
         scheme: Scheme,
         policy_engine: PolicyEngine,
     ) -> Result<RuntimeMode, ProxyInitError> {
+        let ProxyConfig {
+            target_host,
+            insecure_skip_verify,
+            disable_keepalive,
+            path_rewrite,
+            challenge,
+            .. // TODO mikel
+        } = config;
+
         let Some(host) = url.host_str() else {
             return Err(ProxyInitError::InvalidTargetUrl {
                 value: url.to_string(),
@@ -160,7 +140,7 @@ impl RuntimeMode {
         };
 
         let client = build_client(insecure_skip_verify, disable_keepalive);
-        let challenge_service = build_challenge_service(challenge_config);
+        let challenge_service = build_challenge_service(challenge);
 
         let dns_verifier = Box::new(
             HickoryDnsVerifier::new().map_err(|source| ProxyInitError::DnsError { source })?,

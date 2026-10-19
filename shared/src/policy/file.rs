@@ -29,7 +29,7 @@ pub struct PolicyFile {
 #[serde(untagged)]
 enum BotEntry {
     Import { import: String },
-    Rule(Rule),
+    Rule(Box<Rule>),
 }
 
 pub fn default(default_difficulty: u32) -> Result<PolicyEngine, PolicyLoadError> {

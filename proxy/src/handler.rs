@@ -65,7 +65,6 @@ pub async fn challenge_middleware(
     req: Request<Body>,
     next: Next,
 ) -> Response {
-    let request_uri = req.uri().to_string();
     let path = req.uri().path();
     let headers = req.headers();
     let remote_address = get_remote_ip(headers, &addr);
@@ -105,17 +104,17 @@ pub async fn challenge_middleware(
 
     match policy_evaluation {
         PolicyEvaluation::Allow { rule } => {
-            debug!(rule = %rule, uri = %request_uri, "policy: ALLOW, forwarding request");
+            debug!(rule = %rule, uri = %req.uri(), "policy: ALLOW, forwarding request");
             next.run(req).await
         }
 
         PolicyEvaluation::Deny { rule } => {
-            debug!(rule = %rule, uri = %request_uri, "policy: DENY");
+            debug!(rule = %rule, uri = %req.uri(), "policy: DENY");
             StatusCode::FORBIDDEN.into_response()
         }
 
         PolicyEvaluation::Challenge { rule, challenge } => {
-            debug!(rule = %rule, uri = %request_uri, "policy: CHALLENGE");
+            debug!(rule = %rule, uri = %req.uri(), "policy: CHALLENGE");
             if check_token_cookie(&state, &cookie_jar, req.headers(), challenge.rule_hash).is_some()
             {
                 return next.run(req).await;
@@ -128,7 +127,7 @@ pub async fn challenge_middleware(
         }
 
         PolicyEvaluation::DefaultAllow => {
-            debug!(uri = %request_uri, "policy: no rule matched, allowing");
+            debug!(uri = %req.uri(), "policy: no rule matched, allowing");
             next.run(req).await
         }
     }

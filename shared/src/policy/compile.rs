@@ -177,16 +177,16 @@ impl CompiledRule {
         request: &PolicyRequest<'_>,
         dns_verifier: &dyn DnsVerifier,
     ) -> Result<bool, PolicyMatchError> {
-        if let Some(re) = &self.path_regex {
-            if !re.is_match(request.path) {
-                return Ok(false);
-            }
+        if let Some(re) = &self.path_regex
+            && !re.is_match(request.path)
+        {
+            return Ok(false);
         }
 
-        if let Some(re) = &self.user_agent_regex {
-            if !re.is_match(request.user_agent.unwrap_or("")) {
-                return Ok(false);
-            }
+        if let Some(re) = &self.user_agent_regex
+            && !re.is_match(request.user_agent.unwrap_or(""))
+        {
+            return Ok(false);
         }
 
         if let Some(header_regexes) = &self.headers_regex {
@@ -210,19 +210,18 @@ impl CompiledRule {
             }
         }
 
-        if let Some(expression) = &self.expression {
-            if !expression
+        if let Some(expression) = &self.expression
+            && !expression
                 .matches(context, request, dns_verifier, &self.name)
                 .await?
-            {
-                return Ok(false);
-            }
+        {
+            return Ok(false);
         }
 
-        if let Some(nets) = &self.remote_addresses {
-            if !nets.iter().any(|net| net.contains(&request.remote_address)) {
-                return Ok(false);
-            }
+        if let Some(nets) = &self.remote_addresses
+            && !nets.iter().any(|net| net.contains(&request.remote_address))
+        {
+            return Ok(false);
         }
 
         Ok(true)
@@ -572,7 +571,7 @@ impl CompiledThreshold {
 
         let predicates = expr
             .iter()
-            .map(|expr| WeightPredicate::parse(&expr))
+            .map(|expr| WeightPredicate::parse(expr))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|cause| PolicyCompileError::InvalidThresholdExpression {
                 name: threshold.name.clone(),
@@ -581,7 +580,7 @@ impl CompiledThreshold {
 
         Ok(Self {
             name: threshold.name,
-            predicates: predicates,
+            predicates,
             logic,
             action: threshold.action,
             challenge: threshold.challenge,
