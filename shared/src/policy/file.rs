@@ -271,6 +271,22 @@ mod tests {
         assert_eq!(engine.default_difficulty(), 4);
     }
 
+    #[test]
+    fn every_bundled_rule_file_compiles() {
+        let files = embed::yaml_files();
+        assert!(!files.is_empty(), "no bundled YAML files found");
+
+        for (path, yaml) in files {
+            // A full policy rather than a rule list; load_default_policy covers it.
+            if path == DEFAULT_POLICY {
+                continue;
+            }
+            let entries: Vec<BotEntry> =
+                serde_yaml::from_str(yaml).unwrap_or_else(|e| panic!("{path}: {e}"));
+            expand_bot_entries(entries, &mut Vec::new()).unwrap_or_else(|e| panic!("{path}: {e}"));
+        }
+    }
+
     #[tokio::test]
     async fn bundled_yandex_rule_requires_matching_fcrdns() {
         let engine = default(4).expect("bundled default policy must load");
