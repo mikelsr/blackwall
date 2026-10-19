@@ -14,6 +14,7 @@ const NBF_SECS: usize = 60;
 pub struct Claims {
     pub challenge: Uuid,
     pub method: CompactString,
+    pub rule_hash: u64, // Anubis uses names, but I don't think there's risk collision and hashes are cheaper
     pub exp: usize,
     pub iat: usize,
     pub nbf: usize,
@@ -72,6 +73,7 @@ impl TokenService {
         &self,
         challenge_id: Uuid,
         method: &str,
+        rule_hash: u64,
         restriction: Option<String>,
         ttl_secs: u64,
     ) -> Result<String, AuthError> {
@@ -83,6 +85,7 @@ impl TokenService {
         let claims = Claims {
             challenge: challenge_id,
             method: CompactString::new(method),
+            rule_hash,
             exp: now + ttl_secs as usize,
             iat: now,
             nbf: now.saturating_sub(NBF_SECS),
@@ -152,6 +155,7 @@ mod tests {
     use axum::http::HeaderValue;
 
     const RESTRICTION_HEADER: HeaderName = HeaderName::from_static("x-real-ip");
+    const RULE_HASH: u64 = 42;
     const ORIGINAL_IP: &str = "198.51.100.42";
     const DIFFERENT_IP: &str = "203.0.113.25";
 
@@ -197,7 +201,7 @@ mod tests {
         let restriction = restriction_for_request(&headers, Some(&RESTRICTION_HEADER)).unwrap();
 
         let token = service
-            .mint(Uuid::nil(), "sha256", restriction.clone(), 60)
+            .mint(Uuid::nil(), "sha256", RULE_HASH, restriction.clone(), 60)
             .unwrap();
 
         assert!(service.verify(&token, restriction.as_deref()).is_some());
@@ -215,7 +219,9 @@ mod tests {
             restriction_for_request(&headers_with_ip(DIFFERENT_IP), Some(&RESTRICTION_HEADER))
                 .unwrap();
 
-        let token = service.mint(Uuid::nil(), "sha256", original, 60).unwrap();
+        let token = service
+            .mint(Uuid::nil(), "sha256", RULE_HASH, original, 60)
+            .unwrap();
 
         assert!(service.verify(&token, different.as_deref()).is_none());
     }
@@ -229,7 +235,7 @@ mod tests {
                 .unwrap();
 
         let token = service
-            .mint(Uuid::nil(), "sha256", restriction, 60)
+            .mint(Uuid::nil(), "sha256", RULE_HASH, restriction, 60)
             .unwrap();
 
         assert!(service.verify(&token, None).is_none());
@@ -239,10 +245,22 @@ mod tests {
     fn accepts_an_unrestricted_token_only_without_a_restriction() {
         let service = token_service();
 
-        let token = service.mint(Uuid::nil(), "sha256", None, 60).unwrap();
+        let token = service
+            .mint(Uuid::nil(), "sha256", RULE_HASH, None, 60)
+            .unwrap();
 
         assert!(service.verify(&token, None).is_some());
 
         assert!(service.verify(&token, Some("unexpected")).is_none());
+    }
+
+    #[test]
+    fn a_token_carries_the_rule_hash() {
+        let service = token_service();
+        let token = service
+            .mint(Uuid::nil(), "sha256", RULE_HASH, None, 60)
+            .unwrap();
+
+        assert_eq!(service.verify(&token, None).unwrap().rule_hash, RULE_HASH);
     }
 }

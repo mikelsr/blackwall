@@ -5,20 +5,20 @@ edition = "2024"
 
 [dependencies]
 async-trait = "0.1.89"
-bytes = { version = "1.11.1", features = ["serde"] }
+bytes = "1.11.1"
 serde = { version = "1.0.228", features = ["derive", "std"] }
 url = "2.5.8"
 compact_str = { version = "0.9.0", features = ["serde"] }
 uuid = { version = "1.15.1", features = ["v7", "serde"] }
 challenge = { path = "../challenge" }
-dashmap = "6.1.0"
 rustc-hash = "2.1.1"
-tokio = { version = "1.43.0", features = ["macros", "rt", "sync", "time"] }
+tokio = { version = "1.43.0", features = ["macros", "rt", "time"] }
 base64 = "0.22.1"
 rand = "0.10.0"
 tracing.workspace = true
 ipnet = { version = "2.12.0", features = ["serde"] }
 regex = "1.12.4"
+sha2 = "0.10.9"
 http = "1.4.2"
 include_dir = "0.7.4"
 serde_yaml = "0.9.34"

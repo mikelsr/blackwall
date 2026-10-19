@@ -135,7 +135,7 @@ impl BasePrefix {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChallengeConfig {
     pub difficulty: u32,
-    pub ttl: Duration,
+    pub cookie_expiration: Duration,
     pub secret: Bytes,
     pub cookie_secure: bool,
     pub jwt_restriction_header: Option<HeaderName>,
@@ -144,7 +144,7 @@ pub struct ChallengeConfig {
 impl ChallengeConfig {
     pub fn parse(
         difficulty: u32,
-        ttl: Duration,
+        cookie_expiration: Duration,
         secret: Option<String>,
         cookie_secure: bool,
         jwt_restriction_header: Option<String>,
@@ -161,7 +161,7 @@ impl ChallengeConfig {
 
         Ok(Self {
             difficulty,
-            ttl,
+            cookie_expiration,
             secret: validated_secret,
             cookie_secure,
             jwt_restriction_header,

@@ -1,4 +1,5 @@
 use compact_str::CompactString;
+use sha2::{Digest, Sha256};
 
 use super::compile::{
     CompiledRule, CompiledThreshold, PolicyMatchError, ThresholdLogic, WeightPredicate, cel_context,
@@ -21,9 +22,36 @@ fn cel_variables(rules: &[CompiledRule]) -> Vec<&'static str> {
 #[derive(Debug)]
 pub struct PolicyEngine {
     rules: Vec<CompiledRule>,
+    rule_challenges: Vec<ChallengeSpec>,
     cel_variables: Vec<&'static str>,
     thresholds: Vec<CompiledThreshold>,
+    threshold_challenges: Vec<ChallengeSpec>,
     default_difficulty: u32,
+}
+
+/// Identifies a challenge *type* by rule and difficulty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChallengeSpec {
+    pub difficulty: u32,
+    pub rule_hash: u64,
+}
+
+impl ChallengeSpec {
+    fn new(name: &str, challenge: Option<&ChallengeRules>, default_difficulty: u32) -> Self {
+        let difficulty = challenge
+            .and_then(|challenge| challenge.difficulty)
+            .unwrap_or(default_difficulty);
+        let digest = Sha256::new()
+            .chain_update(name)
+            .chain_update([0])
+            .chain_update(difficulty.to_be_bytes())
+            .finalize();
+        let rule_hash = u64::from_be_bytes(digest[..8].try_into().expect("digest has 32 bytes"));
+        Self {
+            difficulty,
+            rule_hash,
+        }
+    }
 }
 
 pub enum PolicyEvaluation {
@@ -35,7 +63,7 @@ pub enum PolicyEvaluation {
     },
     Challenge {
         rule: CompactString,
-        config: Option<ChallengeRules>,
+        challenge: ChallengeSpec,
     },
     DefaultAllow,
 }
@@ -62,10 +90,27 @@ impl PolicyEngine {
             thresholds
         };
 
+        let rule_challenges = rules
+            .iter()
+            .map(|rule| ChallengeSpec::new(&rule.name, rule.challenge.as_ref(), default_difficulty))
+            .collect();
+        let threshold_challenges = thresholds
+            .iter()
+            .map(|threshold| {
+                ChallengeSpec::new(
+                    &threshold.name,
+                    threshold.challenge.as_ref(),
+                    default_difficulty,
+                )
+            })
+            .collect();
+
         Self {
             cel_variables: cel_variables(&rules),
             rules,
+            rule_challenges,
             thresholds,
+            threshold_challenges,
             default_difficulty,
         }
     }
@@ -123,7 +168,7 @@ impl PolicyEngine {
             cel_context(request, &self.cel_variables).map_err(PolicyMatchError::Context)?;
         let mut weight: i32 = 0;
 
-        for rule in &self.rules {
+        for (rule, challenge) in self.rules.iter().zip(&self.rule_challenges) {
             if !rule.matches(&context, request, dns_verifier).await? {
                 continue;
             }
@@ -142,7 +187,7 @@ impl PolicyEngine {
                 Action::Challenge => {
                     return Ok(PolicyEvaluation::Challenge {
                         rule: rule.name.clone(),
-                        config: rule.challenge.clone(),
+                        challenge: *challenge,
                     });
                 }
                 Action::DebugBenchmark => todo!("debug benchmark"),
@@ -153,7 +198,7 @@ impl PolicyEngine {
             }
         }
 
-        for threshold in &self.thresholds {
+        for (threshold, challenge) in self.thresholds.iter().zip(&self.threshold_challenges) {
             if !threshold.matches(weight) {
                 continue;
             }
@@ -166,7 +211,7 @@ impl PolicyEngine {
                 }),
                 Action::Challenge => Ok(PolicyEvaluation::Challenge {
                     rule: threshold.name.clone(),
-                    config: threshold.challenge.clone(),
+                    challenge: *challenge,
                 }),
                 _ => continue,
             };

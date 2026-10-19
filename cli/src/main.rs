@@ -49,7 +49,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     debug!(target = %cfg.proxy.target, "proxy target");
     debug!(
         difficulty = cfg.proxy.challenge.difficulty,
-        ttl = ?cfg.proxy.challenge.ttl,
+        cookie_expiration = ?cfg.proxy.challenge.cookie_expiration,
         cookie_secure = cfg.proxy.challenge.cookie_secure,
         "challenge config"
     );

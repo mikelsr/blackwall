@@ -8,4 +8,4 @@ pub mod request;
 pub mod runtime;
 
 pub use request::PolicyRequest;
-pub use runtime::{PolicyEngine, PolicyEvaluation};
+pub use runtime::{ChallengeSpec, PolicyEngine, PolicyEvaluation};

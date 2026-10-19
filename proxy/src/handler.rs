@@ -17,20 +17,17 @@ use axum::{
 };
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
-use bytes::Bytes;
 use compact_str::CompactString;
 use flate2::Compression;
 use flate2::write::GzEncoder;
 use rand::{Rng, rng};
 use serde::{Deserialize, Serialize};
-use serde_json;
 use shared::challenge::verify_solution;
 use shared::{
-    challenge::{COOKIE_NAME, Challenge, ChallengeRecord, Solution},
-    policy::{PolicyEvaluation, PolicyRequest},
+    challenge::{COOKIE_NAME, Challenge, ChallengeRecord, RANDOM_DATA_LEN, Solution},
+    policy::{ChallengeSpec, PolicyEvaluation, PolicyRequest},
     store::StoreError,
 };
-use std::collections::BTreeMap;
 use std::io::Write;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -53,16 +50,11 @@ const ZSTD: &str = "zstd";
 const HEADER_CACHE_CONTROL: &str = "Cache-Control";
 const HEADER_CONTENT_ENCODING: &str = "Content-Encoding";
 const HEADER_CONTENT_TYPE: &str = "Content-Type";
-const HEADER_IP: &str = "ip";
-const HEADER_URI: &str = "uri";
-const HEADER_USER_AGENT: &str = "ua";
 const HEADER_VARY: &str = "Vary";
 
 struct ChallengeInfo<'a> {
-    pub identity: CompactString,
     pub headers: &'a HeaderMap,
-    pub uri: &'a str,
-    pub difficulty_override: Option<u32>,
+    pub challenge: ChallengeSpec,
 }
 
 // TODO mikel: ergonomics
@@ -122,18 +114,15 @@ pub async fn challenge_middleware(
             StatusCode::FORBIDDEN.into_response()
         }
 
-        PolicyEvaluation::Challenge { rule, config } => {
+        PolicyEvaluation::Challenge { rule, challenge } => {
             debug!(rule = %rule, uri = %request_uri, "policy: CHALLENGE");
-            if check_token_cookie(&state, &cookie_jar, req.headers()).is_some() {
+            if check_token_cookie(&state, &cookie_jar, req.headers(), challenge.rule_hash).is_some()
+            {
                 return next.run(req).await;
             }
-            let difficulty = config.as_ref().and_then(|c| c.difficulty);
-            let identity = get_identity(req.headers(), &addr);
             let info = ChallengeInfo {
-                identity,
                 headers: req.headers(),
-                uri: path,
-                difficulty_override: difficulty,
+                challenge,
             };
             serve_challenge_page(State(state), &info).await
         }
@@ -145,7 +134,12 @@ pub async fn challenge_middleware(
     }
 }
 
-fn check_token_cookie(state: &ProxyState, jar: &CookieJar, headers: &HeaderMap) -> Option<()> {
+fn check_token_cookie(
+    state: &ProxyState,
+    jar: &CookieJar,
+    headers: &HeaderMap,
+    rule_hash: u64,
+) -> Option<()> {
     let cookie = jar.get(COOKIE_NAME)?;
     let token = cookie.value();
 
@@ -178,6 +172,10 @@ fn check_token_cookie(state: &ProxyState, jar: &CookieJar, headers: &HeaderMap) 
         .token_service
         .verify(token, current_restriction.as_deref())
     {
+        Some(claims) if claims.rule_hash != rule_hash => {
+            debug!("challenge_middleware: token was earned on a different rule");
+            None
+        }
         Some(claims) => {
             debug!(
                 challenge = %claims.challenge,
@@ -191,16 +189,6 @@ fn check_token_cookie(state: &ProxyState, jar: &CookieJar, headers: &HeaderMap) 
             None
         }
     }
-}
-
-/// Extracts the user's identity from the request headers rather than the physical client address;
-/// which could be another reverse proxy, a load balancer...
-fn get_identity(headers: &HeaderMap, addr: &ClientAddr) -> CompactString {
-    headers
-        .get(crate::headers::X_REAL_IP)
-        .and_then(|v| v.to_str().ok())
-        .map(CompactString::new)
-        .unwrap_or_else(|| addr.identity())
 }
 
 fn get_remote_ip(headers: &HeaderMap, addr: &ClientAddr) -> IpAddr {
@@ -291,57 +279,30 @@ async fn create_and_store_challenge(
     state: &ProxyState,
     challenge_info: &ChallengeInfo<'_>,
 ) -> Result<Challenge, StoreError> {
-    let now = Timestamp::now(NoContext);
-    let id = Uuid::new_v7(now);
-    let difficulty = challenge_info
-        .difficulty_override
-        .unwrap_or(state.challenge_service.challenge_config.difficulty);
-    let mut raw_random_data = vec![0u8; 32];
-    rng().fill_bytes(&mut raw_random_data);
-    let random_data = Bytes::copy_from_slice(&raw_random_data);
-
-    let challenge = Challenge {
-        id,
-        random_data: random_data.clone(),
+    let id = Uuid::new_v7(Timestamp::now(NoContext));
+    let ChallengeSpec {
         difficulty,
-    };
-
-    let metadata = create_metadata(challenge_info);
+        rule_hash,
+    } = challenge_info.challenge;
+    let mut random_data = [0; RANDOM_DATA_LEN];
+    rng().fill_bytes(&mut random_data);
 
     let record = ChallengeRecord {
-        id,
-        issued_at: now.into(),
-        metadata: metadata,
-        method: POW_METHOD.into(),
-        random_data: random_data,
+        random_data,
         difficulty,
-        spent: false,
+        rule_hash,
     };
-
     state
         .challenge_service
         .challenge_repo
-        .insert(record, state.challenge_service.challenge_config.ttl)
+        .insert(id, record)
         .await?;
 
-    Ok(challenge)
-}
-
-fn create_metadata(challenge_info: &ChallengeInfo<'_>) -> BTreeMap<CompactString, CompactString> {
-    let mut metadata: BTreeMap<CompactString, CompactString> = BTreeMap::new();
-
-    metadata.insert(HEADER_IP.into(), challenge_info.identity.clone());
-    if let Some(ua) = challenge_info
-        .headers
-        .get(USER_AGENT)
-        .and_then(|v| v.to_str().ok())
-    {
-        metadata.insert(HEADER_USER_AGENT.into(), CompactString::new(ua));
-    }
-
-    metadata.insert(HEADER_URI.into(), CompactString::new(challenge_info.uri));
-
-    metadata
+    Ok(Challenge {
+        id,
+        random_data,
+        difficulty,
+    })
 }
 
 pub async fn serve_wasm(headers: HeaderMap) -> Response {
@@ -427,12 +388,11 @@ pub async fn pass_challenge(
         nonce: params.nonce,
     };
 
-    if verify_solution(state.challenge_service.challenge_repo.as_ref(), &solution)
-        .await
-        .is_err()
-    {
+    let Ok(record) =
+        verify_solution(state.challenge_service.challenge_repo.as_ref(), &solution).await
+    else {
         return StatusCode::FORBIDDEN.into_response();
-    }
+    };
 
     let host_header = headers
         .get(HOST)
@@ -445,11 +405,13 @@ pub async fn pass_challenge(
         ROOT
     };
 
+    let cookie_expiration = state.challenge_service.challenge_config.cookie_expiration;
     let token = match state.challenge_service.token_service.mint(
         params.id,
         POW_METHOD,
+        record.rule_hash,
         restriction,
-        state.challenge_service.challenge_config.ttl.as_secs(),
+        cookie_expiration.as_secs(),
     ) {
         Ok(token) => token,
         Err(error) => {
@@ -471,6 +433,7 @@ pub async fn pass_challenge(
         .http_only(true)
         .same_site(SameSite::Lax)
         .secure(state.challenge_service.challenge_config.cookie_secure)
+        .max_age(time::Duration::try_from(cookie_expiration).unwrap_or(time::Duration::MAX))
         .build();
 
     let response = match Response::builder()

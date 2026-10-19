@@ -74,7 +74,7 @@ impl RawArgs {
         let path_rewrite = PathRewriteConfig::parse(self.base_prefix, self.strip_base_prefix)?;
         let challenge_config = ChallengeConfig::parse(
             self.challenge_difficulty,
-            self.challenge_ttl,
+            self.cookie_expiration,
             self.challenge_secret,
             self.cookie_secure,
             self.jwt_restriction_header,
@@ -193,9 +193,14 @@ struct RawArgs {
     #[arg(long = "difficulty", env = "DIFFICULTY", default_value_t = 4)]
     pub(super) challenge_difficulty: u32,
 
-    /// Time-to-live for the challenge session (e.g. 1h, 15m)
-    #[arg(long = "challenge-ttl", env = "CHALLENGE_TTL", default_value = "1h", value_parser = parse_duration)]
-    pub(super) challenge_ttl: Duration,
+    /// How long the cookie for a solved challenge stays valid (e.g. 168h, 1h)
+    #[arg(
+        long = "cookie-expiration-time",
+        env = "COOKIE_EXPIRATION_TIME",
+        default_value = "168h",
+        value_parser = parse_duration
+    )]
+    pub(super) cookie_expiration: Duration,
 
     // TODO mikel: HS512
     /// ED25519 private key seed for signing JWTs. 32 bytes, base64 encoded.
