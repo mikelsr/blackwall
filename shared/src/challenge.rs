@@ -86,8 +86,7 @@ pub mod memory {
     /// How long a client has to solve a challenge. Same as Anubis.
     pub const CHALLENGE_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
-    /// Most pending challenges kept, the oldest is dropped when full.
-    pub const CHALLENGE_CAPACITY: usize = 100_000;
+    pub const CHALLENGE_CAPACITY: usize = 10_000;
 
     pub struct MemoryChallengeRepository {
         expiry: Duration,
