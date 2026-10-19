@@ -6,7 +6,6 @@ use axum::{
     response::IntoResponse,
     routing::any,
 };
-use proxy::client::ClientAddr;
 use shared::config::{
     BasePrefix, ChallengeConfig, PathRewriteConfig, ProxyConfig, Target,
     proxy::ForwardedHeadersConfig,
@@ -95,14 +94,7 @@ async fn spawn_server(app: Router) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    tokio::spawn(async move {
-        axum::serve(
-            listener,
-            app.into_make_service_with_connect_info::<ClientAddr>(),
-        )
-        .await
-        .unwrap();
-    });
+    tokio::spawn(proxy::server::serve(listener, app, std::future::pending()));
 
     format!("http://{addr}")
 }

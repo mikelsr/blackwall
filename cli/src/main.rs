@@ -4,11 +4,7 @@ mod log;
 mod metrics;
 mod tls;
 
-use axum::serve;
-use proxy::{
-    RuntimeMode, build_router,
-    client::{ClientAddr, NoDelayTcpListener},
-};
+use proxy::{RuntimeMode, build_router};
 use shared::config::{BindNetwork, proxy as proxy_config};
 use std::process::exit;
 use std::sync::Arc;
@@ -20,8 +16,15 @@ const APP_VERSION: &str = match option_env!("B7L_VERSION") {
     None => "devel",
 };
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
     let (cfg, policy_engine) = match config::load_config()? {
         config::StartupMode::Version => {
             println!("Blackwall {APP_VERSION}");
@@ -89,25 +92,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let health_state = Arc::new(health::HealthState::new(health::HealthStatus::NotServing));
     spawn_metrics_server(&cfg.metrics, health_state.clone());
 
-    let listener = NoDelayTcpListener::new(bind_tcp_listener(&bind).await?);
-    let svc = app.into_make_service_with_connect_info::<ClientAddr>();
+    let listener = bind_tcp_listener(&bind).await?;
     health_state.set(health::HealthStatus::Serving);
 
     info!(version = APP_VERSION, bind = %bind, mode = mode_name, "starting blackwall");
 
-    let serve_result = serve(listener, svc)
-        .with_graceful_shutdown(async {
-            if let Err(err) = shutdown_signal().await {
-                error!(error = %err, "shutdown signal error");
-            }
-        })
-        .await;
-
-    if let Err(err) = &serve_result {
-        error!(error = %err, "server exited with error");
-    }
-
-    serve_result?;
+    proxy::server::serve(listener, app, async {
+        if let Err(err) = shutdown_signal().await {
+            error!(error = %err, "shutdown signal error");
+        }
+    })
+    .await;
 
     info!("server stopped");
 

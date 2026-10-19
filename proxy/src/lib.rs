@@ -3,6 +3,7 @@ pub mod client;
 mod embed;
 mod handler;
 pub mod headers;
+pub mod server;
 mod tls;
 mod upgrade;
 
