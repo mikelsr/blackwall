@@ -1,12 +1,16 @@
 use cel::common::ast::{Expr, IdedExpr, LiteralValue};
-use cel::{Context, Env, Program, Value};
+use cel::common::types::{CelBool, CelMap, CelMapKey, CelString};
+use cel::common::value::Val;
+use cel::{Context, Env, ExecutionError, Program, Value};
 use compact_str::CompactString;
 use ipnet::IpNet;
 use regex::{self, Regex};
+use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 use std::fmt;
 use std::slice;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, LazyLock, PoisonError, RwLock};
 
 use super::dns::DnsVerifier;
 use super::model::CEL_REMOTE_ADDRESS;
@@ -18,8 +22,24 @@ const USER_AGENT_REGEX: &str = "user_agent_regex";
 const HEADERS_REGEX: &str = "headers_regex";
 const VERIFY_FCRDNS: &str = "verifyFCrDNS";
 
-/// Setup CEL stdlib only once.
-static CEL_STDLIB: LazyLock<Arc<Env>> = LazyLock::new(|| Arc::new(Env::stdlib()));
+/// Setup CEL stdlib only once, with a `matches` that reuses compiled regexes.
+static CEL_STDLIB: LazyLock<Arc<Env>> = LazyLock::new(|| {
+    let mut env = Env::stdlib();
+    cel::add_overload!(env, fn cel_matches: (CelString, CelString) -> Result<CelBool>,
+        name = "matches", id = "matches")
+    .expect("the stdlib has no matches without the cel regex feature");
+    cel::add_member_overload!(env, fn cel_matches: (CelString, CelString) -> Result<CelBool>,
+        name = "matches")
+    .expect("the stdlib has no matches without the cel regex feature");
+    Arc::new(env)
+});
+
+/// Policies use a handful of literal patterns. The cap only matters if a rule
+/// builds patterns from request data.
+const CEL_REGEX_CACHE_CAPACITY: usize = 1024;
+
+static CEL_REGEX_CACHE: LazyLock<RwLock<HashMap<Box<str>, Arc<Regex>>>> =
+    LazyLock::new(Default::default);
 
 /// Rules kept at runtime and used for actual evaluation.
 #[derive(Debug)]
@@ -395,40 +415,85 @@ fn compile_fcrdns_pattern(
     })
 }
 
-fn cel_headers(headers: &http::HeaderMap) -> HashMap<String, String> {
+// Shared, not cloned: a cloned `Regex` allocates its own search cache.
+fn cel_regex(pattern: &str) -> Result<Arc<Regex>, regex::Error> {
+    if let Some(regex) = CEL_REGEX_CACHE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(pattern)
+    {
+        return Ok(Arc::clone(regex));
+    }
+
+    let regex = Arc::new(Regex::new(pattern)?);
+    let mut cache = CEL_REGEX_CACHE
+        .write()
+        .unwrap_or_else(PoisonError::into_inner);
+    if cache.len() < CEL_REGEX_CACHE_CAPACITY {
+        cache.insert(pattern.into(), Arc::clone(&regex));
+    }
+
+    Ok(regex)
+}
+
+fn cel_matches(text: &CelString<'_>, pattern: &CelString<'_>) -> Result<CelBool, ExecutionError> {
+    let regex = cel_regex(pattern.inner()).map_err(|err| ExecutionError::FunctionError {
+        function: "matches".to_owned(),
+        message: format!("'{}' not a valid regex: {err}", pattern.inner()),
+    })?;
+
+    Ok(CelBool::from(regex.is_match(text.inner())))
+}
+
+fn cel_str(value: &str) -> Box<dyn Val + '_> {
+    Box::new(CelString::from(value))
+}
+
+fn cel_headers(headers: &http::HeaderMap) -> CelMap<'_> {
     headers
         .keys()
         .filter_map(|name| {
             let value = headers.get(name)?.to_str().ok()?;
 
-            Some((canonical_header_name(name.as_str()), value.to_owned()))
+            Some((
+                CelMapKey::String(canonical_header_name(name.as_str()).into()),
+                cel_str(value),
+            ))
         })
-        .collect()
+        .collect::<HashMap<_, _>>()
+        .into()
 }
 
-fn cel_query(query: Option<&str>) -> HashMap<String, String> {
-    let mut result = HashMap::new();
+fn cel_query(query: Option<&str>) -> CelMap<'_> {
+    let mut result: HashMap<Cow<'_, str>, Cow<'_, str>> = HashMap::new();
 
     for (key, value) in url::form_urlencoded::parse(query.unwrap_or_default().as_bytes()) {
-        let key = key.into_owned();
-        let value = value.into_owned();
-
-        result
-            .entry(key)
-            .and_modify(|existing: &mut String| {
+        match result.entry(key) {
+            Entry::Occupied(mut entry) => {
+                let existing = entry.get_mut().to_mut();
                 existing.push(',');
                 existing.push_str(&value);
-            })
-            .or_insert(value);
+            }
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+        }
     }
 
     result
+        .into_iter()
+        .map(|(key, value)| {
+            let value: Box<dyn Val + '_> = Box::new(CelString::from(value));
+            (CelMapKey::String(key.into()), value)
+        })
+        .collect::<HashMap<_, _>>()
+        .into()
 }
 
-pub(crate) fn cel_context(
-    request: &PolicyRequest<'_>,
+pub(crate) fn cel_context<'r>(
+    request: &PolicyRequest<'r>,
     variables: &[&str],
-) -> Result<Context<'static, 'static>, cel::SerializationError> {
+) -> Result<Context<'r, 'r>, cel::SerializationError> {
     let mut context = Context::with_env(Arc::clone(&CEL_STDLIB));
 
     for &variable in variables {
@@ -444,13 +509,15 @@ pub(crate) fn cel_context(
                     .unwrap_or(0),
             )?,
             CEL_USER_AGENT => {
-                context.add_variable(variable, request.user_agent.unwrap_or("").to_owned())?
+                context.add_variable_as_val(variable, cel_str(request.user_agent.unwrap_or("")))
             }
-            CEL_HOST => context.add_variable(variable, request.host.unwrap_or("").to_owned())?,
-            CEL_METHOD => context.add_variable(variable, request.method.to_owned())?,
-            CEL_PATH => context.add_variable(variable, request.path.to_owned())?,
-            CEL_QUERY => context.add_variable(variable, cel_query(request.query))?,
-            CEL_HEADERS => context.add_variable(variable, cel_headers(request.headers))?,
+            CEL_HOST => context.add_variable_as_val(variable, cel_str(request.host.unwrap_or(""))),
+            CEL_METHOD => context.add_variable_as_val(variable, cel_str(request.method)),
+            CEL_PATH => context.add_variable_as_val(variable, cel_str(request.path)),
+            CEL_QUERY => context.add_variable_as_val(variable, Box::new(cel_query(request.query))),
+            CEL_HEADERS => {
+                context.add_variable_as_val(variable, Box::new(cel_headers(request.headers)))
+            }
             _ => {}
         }
     }
@@ -459,20 +526,17 @@ pub(crate) fn cel_context(
 }
 
 fn canonical_header_name(name: &str) -> String {
-    name.split('-')
-        .map(|segment| {
-            let mut chars = segment.chars();
-            let Some(first) = chars.next() else {
-                return String::new();
-            };
-
-            let mut result = String::with_capacity(segment.len());
-            result.push(first.to_ascii_uppercase());
-            result.extend(chars.map(|character| character.to_ascii_lowercase()));
-            result
-        })
-        .collect::<Vec<_>>()
-        .join("-")
+    let mut canonical = String::with_capacity(name.len());
+    let mut upper = true;
+    for character in name.chars() {
+        canonical.push(if upper {
+            character.to_ascii_uppercase()
+        } else {
+            character.to_ascii_lowercase()
+        });
+        upper = character == '-';
+    }
+    canonical
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -948,6 +1012,14 @@ pub(crate) mod compile_tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn cel_regex_reuses_compiled_patterns() {
+        let first = cel_regex("^pattern-[a-z]+$").unwrap();
+        let second = cel_regex("^pattern-[a-z]+$").unwrap();
+
+        assert!(Arc::ptr_eq(&first, &second));
     }
 
     #[test]
