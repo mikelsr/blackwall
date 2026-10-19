@@ -1,10 +1,7 @@
 use crate::store::StoreError;
 use challenge::PowHashAlgorithm;
-use std::{collections::BTreeMap, time::SystemTime};
 use uuid::Uuid;
 
-use bytes::Bytes;
-use compact_str::CompactString;
 use serde;
 
 pub const STATIC_PREFIX: &str = "/.within.website/x/cmd/anubis/";
@@ -14,11 +11,13 @@ pub const CHECK_PATH: &str = "/.within.website/x/cmd/anubis/api/check";
 pub const COOKIE_NAME: &str = "b7l.net";
 pub const TEST_COOKIE_NAME: &str = "b7l.net-anubis-cookie-verification";
 
+pub const RANDOM_DATA_LEN: usize = 32;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Challenge {
     pub id: Uuid,
     #[serde(rename = "randomData")]
-    pub random_data: Bytes,
+    pub random_data: [u8; RANDOM_DATA_LEN],
     pub difficulty: u32,
 }
 
@@ -28,17 +27,12 @@ pub struct Solution {
     pub nonce: u64,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+/// What the server keeps to verify a solution. The challenge id is the store key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChallengeRecord {
-    #[serde(rename = "issuedAt")]
-    pub issued_at: SystemTime,
-    pub metadata: BTreeMap<CompactString, CompactString>,
-    pub id: Uuid,
-    pub method: CompactString, // I expect them to always fit in a CompactString
-    #[serde(rename = "randomData")]
-    pub random_data: Bytes,
+    pub random_data: [u8; RANDOM_DATA_LEN],
     pub difficulty: u32,
-    pub spent: bool,
+    pub rule_hash: u64,
 }
 
 #[derive(Debug)]
@@ -50,18 +44,15 @@ pub enum ConsumeError {
 
 #[async_trait::async_trait]
 pub trait ChallengeRepository: Send + Sync {
-    async fn insert(
-        &self,
-        record: ChallengeRecord,
-        ttl: std::time::Duration,
-    ) -> Result<(), StoreError>;
+    async fn insert(&self, id: Uuid, record: ChallengeRecord) -> Result<(), StoreError>;
     async fn consume_once(&self, id: &Uuid) -> Result<ChallengeRecord, ConsumeError>;
 }
 
+/// Consumes the challenge and checks the solution, returning what the challenge was issued for.
 pub async fn verify_solution(
     repo: &dyn ChallengeRepository,
     solution: &Solution,
-) -> Result<(), VerificationError> {
+) -> Result<ChallengeRecord, VerificationError> {
     let record = repo
         .consume_once(&solution.id)
         .await
@@ -73,7 +64,7 @@ pub async fn verify_solution(
         return Err(VerificationError::InvalidSolution);
     }
 
-    Ok(())
+    Ok(record)
 }
 
 pub enum VerificationError {
@@ -82,99 +73,75 @@ pub enum VerificationError {
 }
 
 pub mod memory {
-
     use crate::challenge::{ChallengeRecord, ChallengeRepository, ConsumeError};
     use crate::store::StoreError;
     use async_trait::async_trait;
-    use dashmap::DashMap;
-    use rustc_hash::FxHasher;
+    use rustc_hash::FxHashMap;
     use std::collections::VecDeque;
-    use std::default::Default;
-    use std::hash::BuildHasherDefault;
-    use std::sync::{Arc, Weak};
+    use std::sync::{Mutex, PoisonError};
     use std::time::Duration;
-    use tokio::sync::mpsc;
     use tokio::time::Instant;
     use uuid::Uuid;
 
-    const CLEANUP_INTERVAL: Duration = Duration::from_secs(10);
+    /// How long a client has to solve a challenge. Same as Anubis.
+    pub const CHALLENGE_EXPIRY: Duration = Duration::from_secs(30 * 60);
 
-    // A DashMap with FxHasher for fast key lookups.
-    // The idea is to have a scaling concurrent map with non-cryptographic hashing.
-    type DashFxMap<K, V> = DashMap<K, V, BuildHasherDefault<FxHasher>>;
+    /// Most pending challenges kept, the oldest is dropped when full.
+    pub const CHALLENGE_CAPACITY: usize = 100_000;
 
     pub struct MemoryChallengeRepository {
-        inner: Arc<Inner>,
-        cleanup_tx: mpsc::UnboundedSender<Expiry>,
+        expiry: Duration,
+        capacity: usize,
+        state: Mutex<State>,
     }
 
-    struct Inner {
-        map: DashFxMap<Uuid, Entry>,
+    #[derive(Default)]
+    struct State {
+        entries: FxHashMap<Uuid, Entry>,
+        order: VecDeque<Uuid>, // In insertion order.
     }
 
-    pub struct Entry {
+    struct Entry {
         record: ChallengeRecord,
-        expires_at: Instant,
-    }
-
-    struct Expiry {
-        challenge_id: Uuid,
         expires_at: Instant,
     }
 
     impl MemoryChallengeRepository {
         pub fn new() -> Self {
-            let (tx, rx) = mpsc::unbounded_channel();
-            let inner = Arc::new(Inner {
-                map: DashFxMap::default(),
-            });
+            Self::with_limits(CHALLENGE_EXPIRY, CHALLENGE_CAPACITY)
+        }
 
-            Self::start_expiration(Arc::downgrade(&inner), rx, CLEANUP_INTERVAL);
-
+        fn with_limits(expiry: Duration, capacity: usize) -> Self {
             Self {
-                inner,
-                cleanup_tx: tx,
+                expiry,
+                capacity,
+                state: Mutex::default(),
             }
         }
 
-        /// Spawns a background task that periodically checks the
-        /// cleanup queue and removes expired entries.
-        fn start_expiration(
-            weak_state: Weak<Inner>,
-            mut rx: mpsc::UnboundedReceiver<Expiry>,
-            interval: Duration,
-        ) {
-            tokio::spawn(async move {
-                let mut local_queue: VecDeque<Expiry> = VecDeque::new();
-                let mut cleanup_timer = tokio::time::interval(interval);
+        fn state(&self) -> std::sync::MutexGuard<'_, State> {
+            self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        }
+    }
 
-                loop {
-                    tokio::select! {
-                        // Receive new cleanup tasks.
-                        Some(item) = rx.recv() => {
-                            local_queue.push_back(item);
-                        }
-                        // Periodically cleanup expired items.
-                        _ = cleanup_timer.tick() => {
-                            let Some(state) = weak_state.upgrade() else {
-                                break;
-                            };
-
-                            let now = Instant::now();
-                            while let Some(expiry) = local_queue.front() {
-                                if expiry.expires_at <= now {
-                                    let id = expiry.challenge_id;
-                                    local_queue.pop_front();
-                                    state.map.remove(&id);
-                                } else {
-                                    break;
-                                }
-                            }
-                        }
-                        else => break,
-                    }
+    impl State {
+        fn remove_expired(&mut self, now: Instant) {
+            while let Some(id) = self.order.front() {
+                if self
+                    .entries
+                    .get(id)
+                    .is_some_and(|entry| entry.expires_at > now)
+                {
+                    break;
                 }
-            });
+                self.remove_oldest();
+            }
+        }
+
+        fn remove_oldest(&mut self) {
+            if let Some(id) = self.order.pop_front() {
+                self.entries.remove(&id);
+            }
         }
     }
 
@@ -186,29 +153,23 @@ pub mod memory {
 
     #[async_trait]
     impl ChallengeRepository for MemoryChallengeRepository {
-        async fn insert(&self, record: ChallengeRecord, ttl: Duration) -> Result<(), StoreError> {
-            let expires_at = Instant::now() + ttl;
-            let id = record.id;
-            // Insert into the sharded map.
-            self.inner.map.insert(id, Entry { record, expires_at });
-            // Register for cleanup.
-            let _ = self.cleanup_tx.send(Expiry {
-                challenge_id: id,
-                expires_at: expires_at,
-            });
+        async fn insert(&self, id: Uuid, record: ChallengeRecord) -> Result<(), StoreError> {
+            let now = Instant::now();
+            let mut state = self.state();
+            state.remove_expired(now);
+            if state.order.len() >= self.capacity {
+                state.remove_oldest();
+            }
+            let expires_at = now + self.expiry;
+            state.entries.insert(id, Entry { record, expires_at });
+            state.order.push_back(id);
             Ok(())
         }
 
         async fn consume_once(&self, id: &Uuid) -> Result<ChallengeRecord, ConsumeError> {
-            match self.inner.map.remove(id) {
-                Some((_, entry)) => {
-                    if entry.expires_at > Instant::now() {
-                        Ok(entry.record)
-                    } else {
-                        Err(ConsumeError::NotFound)
-                    }
-                }
-                None => Err(ConsumeError::NotFound),
+            match self.state().entries.remove(id) {
+                Some(entry) if entry.expires_at > Instant::now() => Ok(entry.record),
+                _ => Err(ConsumeError::NotFound),
             }
         }
     }
@@ -216,118 +177,111 @@ pub mod memory {
     #[cfg(test)]
     mod tests {
         use super::*;
-        use bytes::Bytes;
-        use std::collections::BTreeMap;
-        use std::time::SystemTime;
-        use tokio::time::{advance, pause, sleep};
+        use std::sync::Arc;
+        use tokio::time::{advance, pause};
 
-        fn mock_record(id: Uuid) -> ChallengeRecord {
+        fn record(difficulty: u32) -> ChallengeRecord {
             ChallengeRecord {
-                issued_at: SystemTime::now(),
-                metadata: BTreeMap::new(),
-                id,
-                method: "sha256".into(),
-                random_data: Bytes::from_static(b"test_data"),
-                difficulty: 1,
-                spent: false,
+                random_data: [7; crate::challenge::RANDOM_DATA_LEN],
+                difficulty,
+                rule_hash: 1,
             }
         }
 
         #[tokio::test]
-        async fn test_memory_repo_insert_and_consume() {
+        async fn insert_and_consume() {
             let repo = MemoryChallengeRepository::new();
             let id = Uuid::now_v7();
-            let record = mock_record(id);
 
-            repo.insert(record, Duration::from_secs(60))
-                .await
-                .expect("insert failed");
+            repo.insert(id, record(4)).await.unwrap();
 
-            let consumed = repo.consume_once(&id).await.expect("consume failed");
-
-            assert_eq!(consumed.id, id);
-            assert_eq!(consumed.random_data, Bytes::from_static(b"test_data"));
+            assert_eq!(repo.consume_once(&id).await.unwrap(), record(4));
         }
 
         #[tokio::test]
-        async fn test_memory_repo_consume_is_atomic() {
+        async fn consumes_only_once() {
             let repo = MemoryChallengeRepository::new();
             let id = Uuid::now_v7();
-            let record = mock_record(id);
+            repo.insert(id, record(4)).await.unwrap();
 
-            repo.insert(record, Duration::from_secs(60)).await.unwrap();
-
-            // First consumption succeeds
             assert!(repo.consume_once(&id).await.is_ok());
-
-            // Second consumption fails (it was removed)
             let second = repo.consume_once(&id).await;
             assert!(matches!(second, Err(ConsumeError::NotFound)));
         }
 
         #[tokio::test]
-        async fn test_memory_repo_expiration_logic() {
-            pause(); // Control time
-            let repo = MemoryChallengeRepository::new();
+        async fn expired_challenges_are_rejected() {
+            pause();
+            let repo = MemoryChallengeRepository::with_limits(Duration::from_secs(1), 10);
             let id = Uuid::now_v7();
-            let record = mock_record(id);
+            repo.insert(id, record(4)).await.unwrap();
 
-            // Insert with 1s TTL
-            repo.insert(record, Duration::from_secs(1)).await.unwrap();
-
-            // Advance time by 2s
             advance(Duration::from_secs(2)).await;
 
-            // Should be expired
             let result = repo.consume_once(&id).await;
             assert!(matches!(result, Err(ConsumeError::NotFound)));
         }
 
         #[tokio::test]
-        async fn test_expiration_task() {
+        async fn inserts_remove_expired_challenges() {
             pause();
-            let repo = MemoryChallengeRepository::new();
-            let id = Uuid::now_v7();
-            let record = mock_record(id);
+            let repo = MemoryChallengeRepository::with_limits(Duration::from_secs(1), 10);
+            repo.insert(Uuid::now_v7(), record(4)).await.unwrap();
+            repo.insert(Uuid::now_v7(), record(4)).await.unwrap();
 
-            // Insert with very short TTL
-            repo.insert(record, Duration::from_millis(100))
-                .await
-                .unwrap();
+            advance(Duration::from_secs(2)).await;
+            repo.insert(Uuid::now_v7(), record(4)).await.unwrap();
 
-            // Advance time past the CLEANUP_INTERVAL (10s)
-            for _ in 0..11 {
-                advance(Duration::from_secs(1)).await;
-                // yield_now is not always enough to trigger background task in mock time
-                // sometimes we need to sleep for a tiny bit of mock time
-                sleep(Duration::from_millis(1)).await;
-            }
-
-            // The janitor should have run.
-            // We verify by checking that the map no longer contains the ID.
-            assert!(repo.inner.map.is_empty());
+            let state = repo.state();
+            assert_eq!(state.entries.len(), 1);
+            assert_eq!(state.order.len(), 1);
         }
 
         #[tokio::test]
-        async fn test_concurrent_access_safety() {
+        async fn full_store_drops_the_oldest() {
+            let repo = MemoryChallengeRepository::with_limits(CHALLENGE_EXPIRY, 2);
+            let ids = [Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7()];
+            for id in ids {
+                repo.insert(id, record(4)).await.unwrap();
+            }
+
+            let oldest = repo.consume_once(&ids[0]).await;
+            assert!(matches!(oldest, Err(ConsumeError::NotFound)));
+            assert!(repo.consume_once(&ids[1]).await.is_ok());
+            assert!(repo.consume_once(&ids[2]).await.is_ok());
+        }
+
+        #[tokio::test]
+        async fn consumed_ids_count_toward_capacity_until_dropped() {
+            let repo = MemoryChallengeRepository::with_limits(CHALLENGE_EXPIRY, 2);
+            for _ in 0..5 {
+                let id = Uuid::now_v7();
+                repo.insert(id, record(4)).await.unwrap();
+                repo.consume_once(&id).await.unwrap();
+            }
+
+            assert!(repo.state().order.len() <= 2);
+        }
+
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn concurrent_insert_and_consume() {
             let repo = Arc::new(MemoryChallengeRepository::new());
-            let mut handles = Vec::new();
+            let handles: Vec<_> = (0..100)
+                .map(|_| {
+                    let repo = repo.clone();
+                    tokio::spawn(async move {
+                        let id = Uuid::now_v7();
+                        repo.insert(id, record(4)).await.unwrap();
+                        repo.consume_once(&id).await.unwrap();
+                    })
+                })
+                .collect();
 
-            for _i in 0..100 {
-                let r = repo.clone();
-                handles.push(tokio::spawn(async move {
-                    let id = Uuid::now_v7();
-                    let record = mock_record(id);
-                    r.insert(record, Duration::from_secs(60)).await.unwrap();
-                    let _ = r.consume_once(&id).await.unwrap();
-                }));
+            for handle in handles {
+                handle.await.unwrap();
             }
 
-            for h in handles {
-                h.await.unwrap();
-            }
-
-            assert!(repo.inner.map.is_empty());
+            assert!(repo.state().entries.is_empty());
         }
     }
 }
