@@ -41,6 +41,10 @@ use url::Url;
 
 use crate::auth::TokenService;
 
+/// Largest read buffer per HTTP/1 connection. Making it bigger would increase throughput
+/// at the cost of increased memory usage, but I've kept Anubis' default.
+pub(crate) const MAX_READ_BUF: usize = 64 * 1024;
+
 pub struct ProxyState {
     target_scheme: Scheme,
     target_authority: Authority,
@@ -362,6 +366,7 @@ fn build_client(insecure_skip_verify: bool, disable_keepalive: bool) -> HttpsCli
     };
 
     let mut builder = legacy::Client::builder(TokioExecutor::new());
+    builder.http1_max_buf_size(MAX_READ_BUF);
     if disable_keepalive {
         builder.pool_max_idle_per_host(0);
     }

@@ -1,3 +1,4 @@
+use crate::MAX_READ_BUF;
 use crate::client::ClientAddr;
 use axum::{Router, extract::ConnectInfo, http::Request, serve::Listener};
 use hyper::body::Incoming;
@@ -19,7 +20,8 @@ pub async fn serve(mut listener: TcpListener, app: Router, shutdown: impl Future
     let mut builder = http1::Builder::new();
     builder
         .timer(TokioTimer::new())
-        .header_read_timeout(REQUEST_HEAD_TIMEOUT);
+        .header_read_timeout(REQUEST_HEAD_TIMEOUT)
+        .max_buf_size(MAX_READ_BUF);
 
     let (shutdown_tx, shutdown_rx) = watch::channel(());
     let mut shutdown = pin!(shutdown);
