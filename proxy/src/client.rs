@@ -1,14 +1,16 @@
 use compact_str::{CompactString, ToCompactString};
 
 use axum::extract::connect_info::Connected;
-use axum::serve::IncomingStream;
+use axum::serve::{IncomingStream, Listener};
 use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::io;
 use std::mem::zeroed;
 use std::net::SocketAddr;
 use std::net::{IpAddr, Ipv4Addr};
 use tokio::net::{
     TcpListener, TcpStream, UnixListener, UnixStream, unix::SocketAddr as UnixSocketAddr,
 };
+use tracing::debug;
 
 const UNIX_PREFIX: &str = "unix:";
 const UNAMED_UNIX_SOCKET: &str = "unix:<unnamed>";
@@ -54,6 +56,37 @@ impl ClientAddr {
 
 impl Connected<IncomingStream<'_, TcpListener>> for ClientAddr {
     fn connect_info(target: IncomingStream<'_, TcpListener>) -> Self {
+        Self::Tcp(*target.remote_addr())
+    }
+}
+
+pub struct NoDelayTcpListener(TcpListener);
+
+impl NoDelayTcpListener {
+    pub fn new(listener: TcpListener) -> Self {
+        Self(listener)
+    }
+}
+
+impl Listener for NoDelayTcpListener {
+    type Io = TcpStream;
+    type Addr = SocketAddr;
+
+    async fn accept(&mut self) -> (TcpStream, SocketAddr) {
+        let (stream, addr) = Listener::accept(&mut self.0).await;
+        if let Err(err) = stream.set_nodelay(true) {
+            debug!(error = %err, "failed to set TCP_NODELAY");
+        }
+        (stream, addr)
+    }
+
+    fn local_addr(&self) -> io::Result<SocketAddr> {
+        self.0.local_addr()
+    }
+}
+
+impl Connected<IncomingStream<'_, NoDelayTcpListener>> for ClientAddr {
+    fn connect_info(target: IncomingStream<'_, NoDelayTcpListener>) -> Self {
         Self::Tcp(*target.remote_addr())
     }
 }

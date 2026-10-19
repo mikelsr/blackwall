@@ -336,6 +336,8 @@ fn rewrite_uri(
 fn build_client(insecure_skip_verify: bool, disable_keepalive: bool) -> HttpsClient {
     let mut http = legacy::connect::HttpConnector::new();
     http.enforce_http(false);
+    //It's always TCP_NODELAY: https://brooker.co.za/blog/2024/05/09/nagle.html
+    http.set_nodelay(true);
 
     // TODO mikel: apply `--target-sni` flag.
     // We're currently letting rustls handle it.

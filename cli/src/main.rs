@@ -5,7 +5,10 @@ mod metrics;
 mod tls;
 
 use axum::serve;
-use proxy::{RuntimeMode, build_router, client::ClientAddr};
+use proxy::{
+    RuntimeMode, build_router,
+    client::{ClientAddr, NoDelayTcpListener},
+};
 use shared::config::{BindNetwork, proxy as proxy_config};
 use std::process::exit;
 use std::sync::Arc;
@@ -86,7 +89,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let health_state = Arc::new(health::HealthState::new(health::HealthStatus::NotServing));
     spawn_metrics_server(&cfg.metrics, health_state.clone());
 
-    let listener = bind_tcp_listener(&bind).await?;
+    let listener = NoDelayTcpListener::new(bind_tcp_listener(&bind).await?);
     let svc = app.into_make_service_with_connect_info::<ClientAddr>();
     health_state.set(health::HealthStatus::Serving);
 
