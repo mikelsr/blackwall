@@ -1,0 +1,4 @@
+[submodule "bench/anubis"]
+	path = bench/anubis
+	url = https://github.com/TecharoHQ/anubis.git
+	ignore = untracked
