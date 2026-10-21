@@ -2,10 +2,7 @@
 
 Blackwall, or **b7l**, is a partial re-implementation of [Anubis](https://anubis.techaro.lol/) in Rust.
 
-<p align="center">
-  <img src="./assets/demo_challenge.png" alt="Challenge demo" width="49%">
-  <img src="./assets/demo_upstream.png" alt="Upstream demo" width="49%">
-</p>
+![Blackwall challenge screen](./assets/challenge.png)
 
 ## Usage
 
