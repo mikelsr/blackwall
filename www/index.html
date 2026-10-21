@@ -1,421 +1,308 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Blackwall Challenge</title>
-    <script><!--B7L_INJECTION--></script>
-    <style>
-        * { box-sizing: border-box; }
-        body {
-            font-family: Futura, Bahnschrift, 'Avenir Next Condensed', 'Arial Narrow', sans-serif;
-            max-width: 800px;
-            margin: 50px auto;
-            padding: 20px;
-            background: #0a0a0a;
-            color: #cc1a1a;
-        }
-        .header {
-            border-bottom: 1px solid #331111;
-            padding-bottom: 12px;
-            margin-bottom: 24px;
-        }
-        h1 {
-            margin: 0;
-            color: #ff1a1a;
-            text-transform: uppercase;
-            letter-spacing: 0.17em;
-            font-size: clamp(28px, 8vw, 44px);
-            font-weight: 800;
-            line-height: 1.1;
-            text-shadow: 0 0 14px rgba(255,26,26,0.5);
-        }
-        .sub {
-            margin-top: 6px;
-            font-size: 13px;
-            letter-spacing: 0.35em;
-            text-transform: uppercase;
-            color: #882222;
-        }
-        /* Chamfered panel: the outer layer is the border colour, ::before is the fill. */
-        .status-box {
-            --cut: 14px;
-            position: relative;
-            background: #4a1414;
-            clip-path: polygon(var(--cut) 0, 100% 0, 100% calc(100% - var(--cut)), calc(100% - var(--cut)) 100%, 0 100%, 0 var(--cut));
-            padding: 20px;
-            margin-top: 20px;
-            font-size: 13px;
-        }
-        .status-box::before {
-            content: "";
-            position: absolute;
-            inset: 1px;
-            background: #0f0f0f;
-            clip-path: polygon(calc(var(--cut) - 0.5px) 0, 100% 0, 100% calc(100% - var(--cut) + 0.5px), calc(100% - var(--cut) + 0.5px) 100%, 0 100%, 0 calc(var(--cut) - 0.5px));
-        }
-        .status-box > * { position: relative; }
-        .workers {
-            display: flex;
-            gap: 8px;
-            flex-wrap: wrap;
-            margin-top: 10px;
-            justify-content: center;
-        }
-        .worker {
-            background: #1a0a0a;
-            border: 1px solid #331111;
-            padding: 6px 10px;
-            font-size: 11px;
-            text-transform: uppercase;
-        }
-        .worker.active {
-            border-color: #ff1a1a;
-            color: #ff1a1a;
-            box-shadow: 0 0 6px rgba(255,26,26,0.3);
-        }
-        .worker.found {
-            background: #ff1a1a;
-            color: #0a0a0a;
-            border-color: #ff1a1a;
-        }
-        .result {
-            background: #1a0a0a;
-            padding: 15px;
-            margin-top: 15px;
-            word-break: break-all;
-            font-size: 12px;
-            border-left: 2px solid #331111;
-        }
-        .result.success { border-left-color: #ff1a1a; }
-        .result.error { border-left-color: #662222; }
-        #elapsed { color: #ff1a1a; }
-        strong { color: #dd2222; text-transform: uppercase; }
-        .inv { background: #ff1a1a; color: #0a0a0a; padding: 6px 10px; font-size: 11px; }
-        .loading {
-            display: inline-block;
-            width: 12px;
-            height: 12px;
-            border: 2px solid #331111;
-            border-top-color: #ff1a1a;
-            border-radius: 50%;
-            animation: spin 1s linear infinite;
-            margin-left: 8px;
-            vertical-align: middle;
-        }
-        @keyframes spin {
-            to { transform: rotate(360deg); }
-        }
-        .error-msg {
-            background: #1a0505;
-            border: 1px solid #662222;
-            padding: 15px;
-            margin-top: 20px;
-            color: #cc4444;
-        }
-        /* Static background (painted once, no JS): a wall of light filaments over a dot floor. */
-        body::before, body::after {
-            content: "";
-            position: fixed;
-            z-index: -1;
-            pointer-events: none;
-        }
-        /* Filaments: three line patterns with co-prime periods so the spacing looks irregular. */
-        body::before {
-            top: 0; right: 0;
-            width: clamp(170px, 22vw + 50px, 350px);
-            height: calc(80% + 60px);
-            background:
-                repeating-linear-gradient(90deg, rgba(255,36,40,.3) 0 1px, transparent 1px 5px),
-                repeating-linear-gradient(90deg, transparent 0 3px, rgba(255,50,120,.35) 3px 4px, transparent 4px 7px),
-                repeating-linear-gradient(90deg, transparent 0 9px, rgba(255,70,70,.6) 9px 10px, transparent 10px 13px),
-                linear-gradient(90deg, transparent, rgba(200,10,30,.15));
-            -webkit-mask: linear-gradient(90deg, transparent, rgba(0,0,0,.3) 30%, #000), linear-gradient(transparent, rgba(0,0,0,.7) 12%, #000 70%, transparent);
-            -webkit-mask-composite: source-in;
-            mask: linear-gradient(90deg, transparent, rgba(0,0,0,.3) 30%, #000), linear-gradient(transparent, rgba(0,0,0,.7) 12%, #000 70%, transparent);
-            mask-composite: intersect;
-        }
-        /* Floor: a dot grid tilted back so it recedes toward the wall (horizon at 20% from the bottom). */
-        body::after {
-            left: 0; bottom: 0;
-            width: 200vw;
-            height: 150vh;
-            background: radial-gradient(circle, #ff2a32 2px, transparent 2.6px) 0 0 / 22px 22px;
-            transform-origin: 88vw 100%;
-            transform: perspective(45vh) rotateX(66deg);
-            -webkit-mask: linear-gradient(90deg, transparent 5%, rgba(0,0,0,.4) 30%, #000 44%), linear-gradient(transparent, #000 45%, rgba(0,0,0,.55));
-            -webkit-mask-composite: source-in;
-            mask: linear-gradient(90deg, transparent 5%, rgba(0,0,0,.4) 30%, #000 44%), linear-gradient(transparent, #000 45%, rgba(0,0,0,.55));
-            mask-composite: intersect;
-        }
-    </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blackwall</title>
+<script><!--B7L_INJECTION--></script>
+<!-- Blackwall's challenge page: the solver's progress over a corridor of pink dots running to a vanishing point behind the text, after the Blackwall in Cyberpunk 2077. -->
+<style>
+html, body { height: 100%; margin: 0; }
+body {
+    display: flex;
+    align-items: center;
+    font-family: Bahnschrift, 'DIN Condensed', Futura, 'Avenir Next Condensed', 'Arial Narrow', sans-serif;
+    color: #a8324f;
+    /* A red haze rising from the floor; the canvas draws the wall over it. */
+    background: radial-gradient(ellipse 80% 40% at 70% 100%, rgba(150, 12, 40, .4), transparent) #060308;
+}
+canvas { position: fixed; inset: 0; width: 100%; height: 100%; z-index: -1; opacity: 0; transition: opacity .6s; }
+/* A soft dark halo behind the text, so it reads where the wall reaches it. */
+main { position: relative; z-index: 0; }
+main::before { content: ""; position: absolute; inset: -48px -32px; z-index: -1; background: radial-gradient(closest-side, rgba(6, 3, 8, .85), transparent); }
+.error { color: #ff7a90; letter-spacing: .05em; }
+:root {
+    /* The text's palette: the title, the bar and percentage (as r, g, b),
+       the status line, and the dimmer meta line. */
+    --title: #ff2a5a;
+    --accent: 255, 42, 90;
+    --text: #a8324f;
+    --dim: #7c2840;
+}
+body {
+    color: var(--text);
+    justify-content: center;
+    background: radial-gradient(ellipse 90% 40% at 50% 100%, rgba(150, 12, 40, .4), transparent) #060308;
+}
+main { display: flex; flex-direction: column; align-items: center; padding: 0 16px; }
+main::before { inset: -64px -48px; }
+h1 {
+    margin: 0;
+    /* Letter spacing trails the last letter too; this pad evens it out. */
+    padding-left: .17em;
+    font-size: clamp(28px, 7vw, 44px);
+    font-weight: 800;
+    letter-spacing: .17em;
+    text-transform: uppercase;
+    color: var(--title);
+    text-shadow: 0 0 18px rgba(var(--accent), .55);
+}
+/* Thin vertical slats, dim, with the filled part bright. */
+.bar, .row { width: min(340px, 64vw); }
+.bar {
+    position: relative;
+    height: 8px;
+    margin-top: 22px;
+    background: repeating-linear-gradient(90deg, rgba(var(--accent), .2) 0 3px, transparent 3px 5px);
+}
+.bar i {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: 0;
+    background: repeating-linear-gradient(90deg, rgb(var(--accent)) 0 3px, transparent 3px 5px);
+    filter: drop-shadow(0 0 4px rgba(var(--accent), .8));
+    transition: width .1s linear;
+}
+/* Solved: the bar snaps full, as the page leaves right away. */
+.done .bar i {
+    transition: none;
+    background: repeating-linear-gradient(90deg, #5ef6ff 0 3px, transparent 3px 5px);
+    filter: drop-shadow(0 0 4px rgba(94, 246, 255, .8));
+}
+/* A fixed height, so the block doesn't shift when the numbers appear. */
+.row { display: flex; justify-content: space-between; align-items: baseline; height: 18px; margin-top: 10px; font-size: 12px; letter-spacing: .3em; }
+.row b { font-size: 15px; font-weight: normal; color: rgb(var(--accent)); letter-spacing: .1em; }
+.row.meta { margin-top: 6px; color: var(--dim); }
+.done .row:not(.meta), .done .row b { color: #5ef6ff; }
+body { background: radial-gradient(circle at 50% 50%, rgba(150, 12, 60, .14), transparent 50%) #070309; }
+:root { --title: #ff4a78; --accent: 255, 70, 130; --text: #c2507c; --dim: #86335a; }
+</style>
 </head>
 <body>
-    <div class="header">
-        <h1>Blackwall</h1>
-        <div class="sub">Proof of work</div>
-    </div>
+<canvas></canvas>
+<main id="main">
+    <h1>Blackwall</h1>
+    <div class="bar"><i id="fill"></i></div>
+    <div class="row"><span id="status">VERIFYING</span><b id="pct">0%</b></div>
+    <div class="row meta"><span id="threads"></span><span id="time">0.00s</span></div>
+    <noscript><p class="error">Enable JavaScript to continue.</p></noscript>
+</main>
+<script id="wall" type="text/plain">
+// The background, drawn in a worker on the page's canvas, which the page
+// hands over with the window's size, and again with a new size on resize.
+// Off the page's main thread, drawing never holds up the challenge.
+// Seeded, so it looks the same on every visit. The text sits in the middle
+// of the screen; each background keeps that spot dark.
+let canvas;
+onmessage = function (e) {
+    const { w, h, dpr } = e.data;
+    if (e.data.canvas) canvas = e.data.canvas;
+    let seed = 7;
+    const rand = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const layer = new OffscreenCanvas(w * dpr, h * dpr);
+    const g = layer.getContext('2d');
+    g.scale(dpr, dpr);
+    g.globalCompositeOperation = 'lighter';
 
-    <div class="status-box">
-        <div><strong>Status:</strong> <span id="statusText">Initializing...</span><span id="loadingSpinner" class="loading"></span></div>
-        <div><strong>Elapsed:</strong> <span id="elapsed">-</span></div>
-        <div><strong>Workers:</strong></div>
-        <div class="workers" id="workersContainer"></div>
-        <div id="resultContainer"></div>
-    </div>
+    // Dim red, hot pink, near white.
+    const color = (t, a) => t < .5
+        ? `rgba(${90 + 236 * t | 0},${6 + 20 * t | 0},${20 + 76 * t | 0},${a})`
+        : `rgba(255,${16 + 196 * (t - .5) | 0},${58 + 340 * (t - .5) | 0},${a})`;
+    const dot = (x, y, r, fill) => { g.fillStyle = fill; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill(); };
+    // A 1 px wide line from y0 to y1, fading out toward y1.
+    const streak = (x, y0, y1, rgb, a) => {
+        const grad = g.createLinearGradient(0, y0, 0, y1);
+        grad.addColorStop(0, `rgba(${rgb},${a})`);
+        grad.addColorStop(1, `rgba(${rgb},0)`);
+        g.fillStyle = grad;
+        g.fillRect(x, Math.min(y0, y1), 1, Math.abs(y1 - y0));
+    };
 
-    <script>
-        (function() {
-            // ===== UI Helpers =====
-            let startTime = null;
-            let elapsedInterval = null;
-            let workers = [];
+    // A corridor seen from inside, like the AIs' cave around Alt: two lumpy
+    // walls of dots run off to a vanishing point behind the text and fade
+    // with distance.
+    // On tall screens it turns on its side: the walls go above and below
+    // the text, where a phone has room for them.
+    const tall = h > w, L = Math.max(w, h), cx = L / 2, cy = Math.min(w, h) / 2;
+    // F sizes the corridor so its nearest slice spans the long side.
+    const F = L * .5, ry = .75;
+    // Slices about 3 px apart on screen, each sampled about every 3 px.
+    for (let z = .8; z < 8; z += 3 * z * z / F) {
+        const fog = Math.exp(-(z - .8) / 1.6);
+        const ring = Math.ceil(F * 2 * Math.PI * 1.2 / (3 * z));
+        for (let i = 0; i < ring; i++) {
+            const a = 2 * Math.PI * (i + rand()) / ring;
+            // Sides only: the ceiling and floor stay open.
+            if (Math.abs(Math.cos(a)) < .3) continue;
+            const lump = .22 * Math.sin(2 * a + z * .7) + .12 * Math.sin(5 * a - z * 1.6) + .05 * Math.sin(13 * a + z * 3.1);
+            const u = cx + F * Math.cos(a) * (1 + lump) / z, v = cy + F * ry * Math.sin(a) * (1 + lump) / z;
+            const sx = tall ? v : u, sy = tall ? u : v;
+            if (sx < -4 || sx > w + 4 || sy < -4 || sy > h + 4) continue;
+            // Bulges catch the light; hollows fall dark.
+            const lit = Math.max(0, Math.min(1, .35 + 2.5 * lump)) ** 2;
+            if (rand() > .03 + .7 * lit) continue;
+            const t = lit * fog * (.6 + .5 * rand());
+            const r = Math.min(1.8, .3 + .9 / z) * (.6 + .6 * t);
+            dot(sx, sy, r, color(.15 + .85 * t, .35 + .6 * t));
+            if (rand() < .006 * fog) streak(sx, sy, sy + 20 + 120 * rand(), '255,60,110', .25 * fog);
+        }
+    }
 
-            function updateElapsed() {
-                if (startTime) {
-                    const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-                    document.getElementById('elapsed').textContent = `${elapsed}s`;
+    // A soft glow under the sharp dots.
+    canvas.width = layer.width;
+    canvas.height = layer.height;
+    const out = canvas.getContext('2d');
+    out.globalCompositeOperation = 'lighter';
+    out.filter = 'blur(10px)';
+    out.globalAlpha = .7;
+    out.drawImage(layer, 0, 0);
+    out.filter = 'none';
+    out.globalAlpha = 1;
+    out.drawImage(layer, 0, 0);
+    postMessage('drawn');
+};
+</script>
+<script>
+(function () {
+    // ===== The background =====
+    // Drawn by a worker (the code above) on the canvas, so it never holds up
+    // the challenge, then faded in. Without OffscreenCanvas, the page keeps
+    // its plain gradient.
+    const canvas = document.querySelector('canvas');
+    if (canvas.transferControlToOffscreen) {
+        const code = new Blob([document.getElementById('wall').textContent], { type: 'application/javascript' });
+        const painter = new Worker(URL.createObjectURL(code));
+        const size = () => ({ w: innerWidth, h: innerHeight, dpr: Math.min(devicePixelRatio || 1, 2) });
+        const offscreen = canvas.transferControlToOffscreen();
+        painter.postMessage({ canvas: offscreen, ...size() }, [offscreen]);
+        painter.onmessage = () => { canvas.style.opacity = 1; };
+        let resizing;
+        addEventListener('resize', () => { clearTimeout(resizing); resizing = setTimeout(() => painter.postMessage(size()), 150); });
+    }
+
+    // ===== The status panel =====
+    const $ = id => document.getElementById(id);
+    const ui = {
+        ready(count) { $('threads').textContent = count + (count === 1 ? ' THREAD' : ' THREADS'); },
+        tick(progress, s) {
+            $('fill').style.width = (100 * progress).toFixed(1) + '%';
+            $('pct').textContent = Math.floor(100 * progress) + '%';
+            $('time').textContent = s.toFixed(2) + 's';
+        },
+        found(worker, s) {
+            ui.tick(1, s);
+            $('main').className = 'done';
+            $('status').textContent = 'VERIFIED';
+        },
+        error(text) { $('status').textContent = text; $('status').className = 'error'; },
+    };
+
+    // ===== The challenge =====
+    // Runs the solver in workers and reports to `ui`:
+    //   ready(count)        every worker loaded the solver
+    //   tick(progress, s)   every 100 ms while solving: estimated progress 0-1, seconds
+    //   found(worker, s)    a worker found the nonce; the page redirects next
+    //   error(text)
+    // The progress is an estimate: a solve takes about 16^difficulty hashes
+    // (difficulty counts leading zero hex digits), at an assumed rate per
+    // worker. It stays under 99% until a worker finds the nonce.
+    const HASHES_PER_SECOND = 7e6;
+
+    // Worker code, as a string for a Blob URL: the WASM bindings for solve().
+    const workerCode = `
+        let wasm = null, memory = null, length = 0;
+        function bytes() {
+            if (memory === null || memory.byteLength === 0) memory = new Uint8Array(wasm.memory.buffer);
+            return memory;
+        }
+        function pass(array) {
+            const ptr = wasm.__wbindgen_export(array.length, 1) >>> 0;
+            bytes().set(array, ptr);
+            length = array.length;
+            return ptr;
+        }
+        function solve(randomData, difficulty, startNonce, step) {
+            memory = null;
+            const ptr = pass(randomData);
+            return BigInt.asUintN(64, wasm.solve(ptr, length, difficulty, startNonce, step));
+        }
+        self.onmessage = async function (e) {
+            const { type, workerId, wasmUrl, randomData, difficulty, startNonce, step } = e.data;
+            try {
+                if (type === 'init') {
+                    const imports = { './challenge_wasm_bg.js': {} };
+                    const { instance } = await WebAssembly.instantiateStreaming(fetch(wasmUrl), imports);
+                    wasm = instance.exports;
+                    self.postMessage({ type: 'ready', workerId });
+                } else if (type === 'solve') {
+                    const nonce = solve(new Uint8Array(randomData), difficulty, BigInt(startNonce), BigInt(step));
+                    self.postMessage({ type: 'found', workerId, nonce: nonce.toString() });
                 }
+            } catch (err) {
+                self.postMessage({ type: 'error', workerId, error: err.message });
             }
+        };`;
 
-            function setStatus(text, html = false, showSpinner = false) {
-                const el = document.getElementById('statusText');
-                if (html) el.innerHTML = text;
-                else el.textContent = text;
-                document.getElementById('loadingSpinner').style.display = showSpinner ? 'inline-block' : 'none';
-            }
+    function start() {
+        const challenge = window.ANUBIS_CHALLENGE;
+        if (!challenge) return ui.error('Challenge data not found.');
+        const { id, randomData, difficulty } = challenge;
+        if (!id || !randomData || typeof difficulty !== 'number') return ui.error('Invalid challenge data.');
 
-            function showResult(success, message) {
-                const container = document.getElementById('resultContainer');
-                container.innerHTML = '<div class="result ' + (success ? 'success' : 'error') + '">' + message + '</div>';
-            }
+        const cores = Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency > 0
+            ? navigator.hardwareConcurrency
+            : 4;
+        const count = Math.max(1, Math.ceil(cores / 2));
+        const wasmUrl = location.origin + '/.within.website/x/cmd/anubis/api/solver.wasm';
+        const blobUrl = URL.createObjectURL(new Blob([workerCode], { type: 'application/javascript' }));
+        const workers = [];
+        let ready = 0, solved = false, started = 0, timer = null;
+        const seconds = () => (performance.now() - started) / 1000;
 
-            function showError(message) {
-                setStatus('Error', false, false);
-                const container = document.getElementById('resultContainer');
-                container.innerHTML = '<div class="error-msg">' + message + '</div>';
-            }
+        function stop() {
+            workers.forEach(w => w.terminate());
+            clearInterval(timer);
+            URL.revokeObjectURL(blobUrl);
+        }
+        function fail(text) {
+            stop();
+            ui.error(text);
+        }
 
-            function terminateAllWorkers() {
-                workers.forEach(function(w) { w.terminate(); });
-                workers = [];
-                if (elapsedInterval) {
-                    clearInterval(elapsedInterval);
-                    elapsedInterval = null;
+        for (let i = 0; i < count; i++) {
+            const worker = new Worker(blobUrl);
+            worker.onmessage = function (e) {
+                const { type, workerId, nonce, error } = e.data;
+                if (type === 'ready' && ++ready === count) {
+                    ui.ready(count);
+                    started = performance.now();
+                    const rate = HASHES_PER_SECOND * count / 16 ** difficulty;
+                    timer = setInterval(() => ui.tick(Math.min(.99, 1 - Math.exp(-seconds() * rate)), seconds()), 100);
+                    workers.forEach((w, idx) => w.postMessage({
+                        type: 'solve', workerId: idx, randomData: Array.from(randomData),
+                        difficulty, startNonce: idx, step: count,
+                    }));
+                } else if (type === 'found' && !solved) {
+                    solved = true;
+                    stop();
+                    ui.found(workerId, seconds());
+                    const passUrl = new URL('/.within.website/x/cmd/anubis/api/pass-challenge', location.origin);
+                    passUrl.searchParams.set('id', id);
+                    passUrl.searchParams.set('nonce', nonce);
+                    passUrl.searchParams.set('redir', location.pathname + location.search);
+                    location.href = passUrl.toString();
+                } else if (type === 'error') {
+                    fail('Error: ' + error);
                 }
-            }
+            };
+            worker.onerror = err => fail('Error: ' + err.message);
+            workers.push(worker);
+        }
+        workers.forEach((w, i) => w.postMessage({ type: 'init', workerId: i, wasmUrl }));
+    }
 
-            // ===== Worker Code (as string for Blob URL) =====
-            const workerCode = [
-                '// WASM bindings inside worker',
-                'function __wbg_get_imports() {',
-                '    const import0 = { __proto__: null };',
-                '    return { __proto__: null, "./challenge_wasm_bg.js": import0 };',
-                '}',
-                '',
-                'let cachedUint8ArrayMemory0 = null;',
-                'function getUint8ArrayMemory0(wasm) {',
-                '    if (cachedUint8ArrayMemory0 === null || cachedUint8ArrayMemory0.byteLength === 0) {',
-                '        cachedUint8ArrayMemory0 = new Uint8Array(wasm.memory.buffer);',
-                '    }',
-                '    return cachedUint8ArrayMemory0;',
-                '}',
-                '',
-                'let WASM_VECTOR_LEN = 0;',
-                'function passArray8ToWasm0(wasm, arg, malloc) {',
-                '    const ptr = malloc(arg.length * 1, 1) >>> 0;',
-                '    getUint8ArrayMemory0(wasm).set(arg, ptr / 1);',
-                '    WASM_VECTOR_LEN = arg.length;',
-                '    return ptr;',
-                '}',
-                '',
-                'function solve(wasm, random_data, difficulty, start_nonce, step) {',
-                '    cachedUint8ArrayMemory0 = null;',
-                '    const ptr0 = passArray8ToWasm0(wasm, random_data, wasm.__wbindgen_export);',
-                '    const len0 = WASM_VECTOR_LEN;',
-                '    const ret = wasm.solve(ptr0, len0, difficulty, start_nonce, step);',
-                '    return BigInt.asUintN(64, ret);',
-                '}',
-                '',
-                'let wasm = null;',
-                '',
-                'self.onmessage = async function(e) {',
-                '    const { type, workerId, wasmUrl, randomData, difficulty, startNonce, step } = e.data;',
-                '',
-                '    if (type === "init") {',
-                '        try {',
-                '            const imports = __wbg_get_imports();',
-                '            const response = await fetch(wasmUrl);',
-                '            const { instance } = await WebAssembly.instantiateStreaming(response, imports);',
-                '            wasm = instance.exports;',
-                '            self.postMessage({ type: "ready", workerId: workerId });',
-                '        } catch (err) {',
-                '            self.postMessage({ type: "error", workerId: workerId, error: err.message });',
-                '        }',
-                '    } else if (type === "solve") {',
-                '        try {',
-                '            const randomDataArray = new Uint8Array(randomData);',
-                '            const nonce = solve(',
-                '                wasm,',
-                '                randomDataArray,',
-                '                difficulty,',
-                '                BigInt(startNonce),',
-                '                BigInt(step)',
-                '            );',
-                '            self.postMessage({ type: "found", workerId: workerId, nonce: nonce.toString() });',
-                '        } catch (err) {',
-                '            self.postMessage({ type: "error", workerId: workerId, error: err.message });',
-                '        }',
-                '    }',
-                '};'
-            ].join('\n');
-
-            // ===== Main Challenge Logic =====
-            function startChallenge() {
-                // Check for challenge data
-                if (!window.ANUBIS_CHALLENGE) {
-                    showError('Challenge data not found. <code>window.ANUBIS_CHALLENGE</code> is not defined.');
-                    return;
-                }
-
-                const challenge = window.ANUBIS_CHALLENGE;
-                const id = challenge.id;
-                const randomData = challenge.randomData;
-                const difficulty = challenge.difficulty;
-
-                if (!id || !randomData || typeof difficulty !== 'number') {
-                    showError('Invalid challenge data structure.');
-                    return;
-                }
-
-                // Convert randomData array to Uint8Array
-                const randomDataBytes = new Uint8Array(randomData);
-
-                // Determine number of workers
-                const detectedCores = Number.isInteger(navigator.hardwareConcurrency) && navigator.hardwareConcurrency > 0
-                    ? navigator.hardwareConcurrency
-                    : 4;
-                const numWorkers = Math.max(1, Math.ceil(detectedCores / 2));
-
-                // Create worker status indicators
-                const workersContainer = document.getElementById('workersContainer');
-                workersContainer.innerHTML = '';
-                for (let i = 0; i < numWorkers; i++) {
-                    const div = document.createElement('div');
-                    div.className = 'worker';
-                    div.id = 'worker-' + i;
-                    div.textContent = 'W' + i;
-                    workersContainer.appendChild(div);
-                }
-
-                setStatus('Loading WASM...', false, true);
-
-                const wasmUrl = window.location.origin + '/.within.website/x/cmd/anubis/api/solver.wasm';
-                const workerBlob = new Blob([workerCode], { type: 'application/javascript' });
-                const workerBlobUrl = URL.createObjectURL(workerBlob);
-
-                let workersReady = 0;
-                let solved = false;
-
-                // Create workers
-                for (let i = 0; i < numWorkers; i++) {
-                    const worker = new Worker(workerBlobUrl);
-                    const workerIndex = i;
-
-                    worker.onmessage = function(e) {
-                        const data = e.data;
-                        const type = data.type;
-                        const workerId = data.workerId;
-                        const nonce = data.nonce;
-                        const error = data.error;
-
-                        if (type === 'ready') {
-                            document.getElementById('worker-' + workerId).classList.add('active');
-                            workersReady++;
-
-                            if (workersReady === numWorkers) {
-                                // All workers ready, start solving
-                                setStatus('Solving challenge...', false, true);
-                                startTime = performance.now();
-                                elapsedInterval = setInterval(updateElapsed, 100);
-
-                                // Send solve command to all workers
-                                workers.forEach(function(w, idx) {
-                                    w.postMessage({
-                                        type: 'solve',
-                                        workerId: idx,
-                                        randomData: Array.from(randomDataBytes),
-                                        difficulty: difficulty,
-                                        startNonce: idx,
-                                        step: numWorkers
-                                    });
-                                });
-                            }
-                        } else if (type === 'found' && !solved) {
-                            solved = true;
-                            const elapsed = ((performance.now() - startTime) / 1000).toFixed(3);
-
-                            // Update worker indicator
-                            document.getElementById('worker-' + workerId).classList.remove('active');
-                            document.getElementById('worker-' + workerId).classList.add('found');
-
-                            setStatus('Solved by <span class="inv">W' + workerId + '</span>', true, false);
-                            updateElapsed();
-
-                            showResult(true,
-                                '<strong>Solution found!</strong><br><br>' +
-                                '<strong>Nonce:</strong> ' + nonce + '<br>' +
-                                '<strong>Time:</strong> ' + elapsed + 's<br>' +
-                                '<strong>Worker:</strong> ' + workerId + '<br><br>' +
-                                '<em>Redirecting...</em>'
-                            );
-
-                            terminateAllWorkers();
-                            URL.revokeObjectURL(workerBlobUrl);
-
-                            // Submit solution
-                            const redir = window.location.pathname + window.location.search;
-                            const passUrl = new URL('/.within.website/x/cmd/anubis/api/pass-challenge', window.location.origin);
-                            passUrl.searchParams.set('id', id);
-                            passUrl.searchParams.set('nonce', nonce);
-                            passUrl.searchParams.set('redir', redir);
-
-                            // Redirect to pass-challenge endpoint
-                            window.location.href = passUrl.toString();
-
-                        } else if (type === 'error') {
-                            showError('Worker ' + workerId + ' error: ' + error);
-                            terminateAllWorkers();
-                            URL.revokeObjectURL(workerBlobUrl);
-                        }
-                    };
-
-                    worker.onerror = function(err) {
-                        showError('Worker ' + workerIndex + ' failed: ' + err.message);
-                        terminateAllWorkers();
-                        URL.revokeObjectURL(workerBlobUrl);
-                    };
-
-                    workers.push(worker);
-                }
-
-                // Initialize all workers (load WASM)
-                workers.forEach(function(worker, i) {
-                    worker.postMessage({
-                        type: 'init',
-                        workerId: i,
-                        wasmUrl: wasmUrl
-                    });
-                });
-            }
-
-            // Auto-start when DOM is ready
-            if (document.readyState === 'loading') {
-                document.addEventListener('DOMContentLoaded', startChallenge);
-            } else {
-                startChallenge();
-            }
-        })();
-    </script>
+    start();
+})();
+</script>
 </body>
 </html>

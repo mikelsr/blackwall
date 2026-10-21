@@ -3,7 +3,7 @@
 /// This module embeds the HTML and WASM files at compile time.
 use const_str::split;
 
-pub(crate) const ASSET_CHALLENGE_HTML: &str = include_str!("../../www/index.html");
+pub(crate) const ASSET_CHALLENGE_HTML: &str = include_str!(concat!(env!("OUT_DIR"), "/index.html"));
 pub(crate) const ASSET_SOLVER_WASM: &[u8] =
     include_bytes!("../../challenge-wasm/pkg/challenge_wasm_bg.wasm");
 pub(crate) const ASSET_SOLVER_WASM_GZIP: &[u8] =
