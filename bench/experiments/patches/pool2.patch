@@ -1,0 +1,11 @@
+--- a/proxy/src/lib.rs
++++ b/proxy/src/lib.rs
+@@ -347,6 +347,8 @@
+ 
+     let mut builder = legacy::Client::builder(TokioExecutor::new());
+     builder.http1_max_buf_size(MAX_READ_BUF);
++    // Anubis's backend pool: at most 2 idle connections per host (Go's default).
++    builder.pool_max_idle_per_host(2);
+     if disable_keepalive {
+         builder.pool_max_idle_per_host(0);
+     }

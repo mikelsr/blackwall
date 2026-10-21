@@ -1,0 +1,35 @@
+# Minimal policy: isolates the proxy implementation from policy-engine cost.
+# Shared by Blackwall and Anubis. Blackwall ignores the Anubis-only top-level
+# keys (status_codes, store, logging, dnsbl).
+
+bots:
+  - name: bench-allow
+    path_regex: ^/allow/
+    action: ALLOW
+
+  - name: bench-deny
+    path_regex: ^/deny/
+    action: DENY
+
+  - name: bench-challenge
+    path_regex: .*
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 1
+
+# Anubis-only settings, chosen to match Blackwall's behaviour and minimise
+# Anubis's extra overhead.
+status_codes:
+  CHALLENGE: 200
+  DENY: 403 # Anubis defaults to 200; Blackwall always returns 403.
+
+store:
+  backend: memory
+  parameters: {}
+
+dnsbl: false
+
+logging:
+  sink: stdio
+  level: "ERROR+4" # above ERROR: nothing is emitted

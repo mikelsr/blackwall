@@ -1,0 +1,14 @@
+diff -ru a/lib/policy/checker.go b/lib/policy/checker.go
+--- a/lib/policy/checker.go	2026-10-20 10:15:48
++++ b/lib/policy/checker.go	2026-10-20 10:16:19
+@@ -89,6 +89,10 @@
+ 			return true, nil
+ 		}
+ 	}
++	// Joining a single value gives the same string, already checked above.
++	if len(values) == 1 {
++		return false, nil
++	}
+ 	if hmc.regexp.MatchString(strings.Join(values, ",")) {
+ 		return true, nil
+ 	}

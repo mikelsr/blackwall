@@ -1,0 +1,29 @@
+diff -ru a/cmd/anubis/main.go b/cmd/anubis/main.go
+--- a/cmd/anubis/main.go	2026-10-20 10:15:48
++++ b/cmd/anubis/main.go	2026-10-20 10:16:19
+@@ -175,7 +175,8 @@
+ 	}
+ 
+ 	rp := &httputil.ReverseProxy{
+-		Transport: transport,
++		Transport:  transport,
++		BufferPool: copyBufferPool{},
+ 		Rewrite: func(r *httputil.ProxyRequest) {
+ 			r.SetURL(targetUri)
+ 			// SetURL clears Out.Host; preserve the inbound Host, matching the
+@@ -215,6 +216,15 @@
+ 	}
+ 	return rp, nil
+ }
++
++// copyBuffers holds the 32 KiB buffers httputil.ReverseProxy copies response
++// bodies through. Without a BufferPool it allocates one per response.
++var copyBuffers = sync.Pool{New: func() any { b := make([]byte, 32*1024); return &b }}
++
++type copyBufferPool struct{}
++
++func (copyBufferPool) Get() []byte  { return *copyBuffers.Get().(*[]byte) }
++func (copyBufferPool) Put(b []byte) { copyBuffers.Put(&b) }
+ 
+ type automaticSNITransport struct{ transport *http.Transport }
+ 

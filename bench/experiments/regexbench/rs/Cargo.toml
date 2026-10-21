@@ -1,0 +1,15 @@
+[package]
+name = "regexbench"
+version = "0.1.0"
+edition = "2021"
+
+# Not part of the repository's workspace.
+[workspace]
+
+[dependencies]
+# The version Blackwall uses.
+regex = "=1.13.1"
+serde_json = "1"
+
+[profile.release]
+codegen-units = 1

@@ -1,0 +1,22 @@
+diff -ru a/cmd/anubis/main.go b/cmd/anubis/main.go
+--- a/cmd/anubis/main.go	2026-10-20 10:15:48
++++ b/cmd/anubis/main.go	2026-10-20 10:16:19
+@@ -14,6 +14,7 @@
+ 	"io/fs"
+ 	"log"
+ 	"log/slog"
++	"math"
+ 	"net"
+ 	"net/http"
+ 	"net/http/httputil"
+@@ -144,6 +145,10 @@
+ 	}
+ 
+ 	transport := http.DefaultTransport.(*http.Transport).Clone()
++	// Keep every idle backend connection, like hyper's client, instead of
++	// Go's default of 2 per host (and 100 in total).
++	transport.MaxIdleConns = 0
++	transport.MaxIdleConnsPerHost = math.MaxInt
+ 
+ 	if targetDisableKeepAlive {
+ 		transport.DisableKeepAlives = true

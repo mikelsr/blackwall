@@ -1,0 +1,45 @@
+# Realistic policy: the stock default rule set ((data)/meta/default-config.yaml)
+# is evaluated before the bench rules, so every request pays for the full rule
+# list. Each server reads its own bundled copy; Blackwall's data/ must match the
+# vendored Anubis's data/, or the two evaluate different rules. The bench user agent contains
+# "Mozilla", so generic-browser adds weight and the threshold challenges it.
+#
+# Note: Blackwall skips the GeoIP/ASN rules (no Thoth/GeoIP support), and
+# Anubis skips them without a GeoIP database configured. Neither evaluates them.
+
+bots:
+  - import: (data)/meta/default-config.yaml
+
+  - name: bench-allow
+    path_regex: ^/allow/
+    action: ALLOW
+
+  - name: bench-deny
+    path_regex: ^/deny/
+    action: DENY
+
+thresholds:
+  - name: bench-challenge
+    expression: weight > 0
+    action: CHALLENGE
+    challenge:
+      algorithm: fast
+      difficulty: 1
+
+  - name: bench-allow-rest
+    expression: weight <= 0
+    action: ALLOW
+
+status_codes:
+  CHALLENGE: 200
+  DENY: 403
+
+store:
+  backend: memory
+  parameters: {}
+
+dnsbl: false
+
+logging:
+  sink: stdio
+  level: "ERROR+4"

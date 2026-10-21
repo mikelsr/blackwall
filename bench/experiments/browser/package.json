@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "description": "Drives Chrome for run.sh: the challenge page in a browser.",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "1.49.1"
+  }
+}
