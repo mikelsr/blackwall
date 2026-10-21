@@ -77,12 +77,6 @@ impl CompiledRule {
             });
         }
 
-        if rule.user_agent_regex.is_some() && rule.path_regex.is_some() {
-            return Err(PolicyCompileError::BothUserAgentAndPath {
-                name: rule.name.clone(),
-            });
-        }
-
         let path_regex = rule
             .path_regex
             .as_deref()
